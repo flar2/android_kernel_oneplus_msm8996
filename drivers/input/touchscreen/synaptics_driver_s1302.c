@@ -2072,6 +2072,13 @@ static int choice_gpio_function(struct synaptics_ts_data *ts)
 	return ret;
 }
 
+bool s1302_is_keypad_stopped(void)
+{
+	struct synaptics_ts_data *ts = tc_g;
+
+	return ts->stop_keypad;
+}
+
 static void synaptics_input_event(struct input_handle *handle,
 		unsigned int type, unsigned int code, int value)
 {
