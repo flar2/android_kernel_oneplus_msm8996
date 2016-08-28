@@ -405,6 +405,7 @@ static bool __wcd9xxx_switch_micbias(struct wcd9xxx_mbhc *mbhc,
 				    0x10, 0x10);
 		snd_soc_update_bits(codec, WCD9XXX_A_LDO_H_MODE_1,
 				    0x20, 0x20);
+
 		/* Reprogram thresholds */
 		if (d->micb_mv != VDDIO_MICBIAS_MV) {
 			cfilt_k_val =
