@@ -113,6 +113,8 @@ static int lenovo_input_mapping(struct hid_device *hdev,
 	default:
 		return 0;
 	}
+
+	return 0;
 }
 
 #undef map_key_clear

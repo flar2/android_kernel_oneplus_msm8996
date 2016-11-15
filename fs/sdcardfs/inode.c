@@ -334,13 +334,13 @@ static int sdcardfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode
 		if(err) {
 			/* if the sbi->obbpath is not available, the lower_path won't be
 			 * changed by setup_obb_dentry() but the lower path is saved to
-             * its orig_path. this dentry will be revalidated later.
+			 * its orig_path. this dentry will be revalidated later.
 			 * but now, the lower_path should be NULL */
 			sdcardfs_put_reset_lower_path(dentry);
 
 			/* the newly created lower path which saved to its orig_path or
 			 * the lower_path is the base obbpath.
-             * therefore, an additional path_get is required */
+			 * therefore, an additional path_get is required */
 			path_get(&lower_path);
 		} else
 			make_nomedia_in_obb = 1;

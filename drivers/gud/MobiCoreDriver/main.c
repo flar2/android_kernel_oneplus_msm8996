@@ -666,7 +666,7 @@ static int mobicore_init(void)
 	if (err)
 		goto fail_creat_dev_admin;
 
-		return 0;
+	return 0;
 
 fail_creat_dev_admin:
 	mc_scheduler_exit();

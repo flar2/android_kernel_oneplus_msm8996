@@ -1466,7 +1466,7 @@ static int msm_venc_queue_setup(struct vb2_queue *q,
 
 		ctrl = v4l2_ctrl_find(&inst->ctrl_handler,
 			V4L2_CID_MPEG_VIDC_VIDEO_EXTRADATA);
-		if (ctrl)
+		if (ctrl) {
 			extradata = v4l2_ctrl_g_ctrl(ctrl);
 			switch (extradata) {
 			case V4L2_MPEG_VIDC_EXTRADATA_INPUT_CROP:
@@ -1479,6 +1479,7 @@ static int msm_venc_queue_setup(struct vb2_queue *q,
 			default:
 				break;
 			}
+		}
 
 		inst->fmts[OUTPUT_PORT]->num_planes = *num_planes;
 		rc = call_hfi_op(hdev, session_set_property, inst->session,

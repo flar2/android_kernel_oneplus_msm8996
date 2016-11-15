@@ -1763,60 +1763,60 @@ static ssize_t synap_read_address(struct file *file, char __user *user_buf, size
 {
 	int ret;
 	char buffer[PAGESIZE];
-    char buf[128];
-    int i;
-    int cnt = 0;
+	char buf[128];
+	int i;
+	int cnt = 0;
 
 	struct synaptics_ts_data *ts = ts_g;
-    TPD_DEBUG("%s page=0x%x,address=0x%x,block=0x%x\n",__func__,page,address,block);
-    cnt += sprintf(&(buffer[cnt]), "page=0x%x,address=0x%x,block=0x%x\n",page,address,block);
-    ret = synaptics_rmi4_i2c_write_byte(ts->client,0xff,page);
-    ret = synaptics_rmi4_i2c_read_block(ts->client,address,block,buf);
-    for (i=0;i < block;i++)
-    {
-        cnt += sprintf(&(buffer[cnt]), "buf[%d]=0x%x\n",i,buf[i]);
-        TPD_DEBUG("buffer[%d]=0x%x\n",i,buffer[i]);
-    }
-    ret = simple_read_from_buffer(user_buf, count, ppos, buffer, strlen(buffer));
+	TPD_DEBUG("%s page=0x%x,address=0x%x,block=0x%x\n",__func__,page,address,block);
+	cnt += sprintf(&(buffer[cnt]), "page=0x%x,address=0x%x,block=0x%x\n",page,address,block);
+	ret = synaptics_rmi4_i2c_write_byte(ts->client,0xff,page);
+	ret = synaptics_rmi4_i2c_read_block(ts->client,address,block,buf);
+	for (i=0;i < block;i++)
+	{
+		cnt += sprintf(&(buffer[cnt]), "buf[%d]=0x%x\n",i,buf[i]);
+		TPD_DEBUG("buffer[%d]=0x%x\n",i,buffer[i]);
+	}
+	ret = simple_read_from_buffer(user_buf, count, ppos, buffer, strlen(buffer));
 	return ret;
 }
 
 static ssize_t synap_write_address(struct file *file, const char __user *buffer, size_t count, loff_t *ppos)
 {
 	int buf[128];
-    int ret,i;
+	int ret,i;
 	struct synaptics_ts_data *ts = ts_g;
-    int temp_block,wbyte;
-    char reg[30];
+	int temp_block,wbyte;
+	char reg[30];
 
-    ret = sscanf(buffer,"%x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x",\
-    &buf[0],&buf[1],&buf[2],&buf[3],&buf[4],&buf[5],&buf[6],&buf[7],&buf[8],&buf[9],\
-    &buf[10],&buf[11],&buf[12],&buf[13],&buf[14],&buf[15],&buf[16],&buf[17]);
-    for (i = 0;i < ret;i++)
-    {
-        TPD_DEBUG("buf[i]=0x%x,",buf[i]);
-    }
-    TPD_DEBUG("\n");
-    page= buf[0];
-    address = buf[1];
-    temp_block = buf[2];
-    wbyte = buf[3];
-    if (0xFF == temp_block)//the  mark is to write register else read register
-    {
-        for (i=0;i < wbyte;i++)
-        {
-            reg[i] = (char)buf[4+i];
-        }
-        ret = synaptics_rmi4_i2c_write_byte(ts->client,0xff,page);
-        ret = synaptics_rmi4_i2c_write_block(ts->client,(char)address,wbyte,reg);
-        TPD_DEBUG("%s write page=0x%x,address=0x%x\n",__func__,page,address);
-        for (i=0;i < wbyte;i++)
-        {
-            TPD_DEBUG("reg=0x%x\n",reg[i]);
-        }
-    }
-    else
-        block = temp_block;
+	ret = sscanf(buffer,"%x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x",\
+		&buf[0],&buf[1],&buf[2],&buf[3],&buf[4],&buf[5],&buf[6],&buf[7],&buf[8],&buf[9],\
+		&buf[10],&buf[11],&buf[12],&buf[13],&buf[14],&buf[15],&buf[16],&buf[17]);
+	for (i = 0;i < ret;i++)
+	{
+		TPD_DEBUG("buf[i]=0x%x,",buf[i]);
+	}
+	TPD_DEBUG("\n");
+	page= buf[0];
+	address = buf[1];
+	temp_block = buf[2];
+	wbyte = buf[3];
+	if (0xFF == temp_block)//the  mark is to write register else read register
+	{
+		for (i=0;i < wbyte;i++)
+		{
+			reg[i] = (char)buf[4+i];
+		}
+		ret = synaptics_rmi4_i2c_write_byte(ts->client,0xff,page);
+		ret = synaptics_rmi4_i2c_write_block(ts->client,(char)address,wbyte,reg);
+		TPD_DEBUG("%s write page=0x%x,address=0x%x\n",__func__,page,address);
+		for (i=0;i < wbyte;i++)
+		{
+			TPD_DEBUG("reg=0x%x\n",reg[i]);
+		}
+	}
+	else
+		block = temp_block;
 	return count;
 }
 
@@ -4120,8 +4120,8 @@ static int synaptics_ts_probe(struct i2c_client *client, const struct i2c_device
 	TP_FW = CURRENT_FIRMWARE_ID;
 	sprintf(ts->fw_id,"0x%x",TP_FW);
 
-	memset(ts->fw_name,TP_FW_NAME_MAX_LEN,0);
-	memset(ts->test_limit_name,TP_FW_NAME_MAX_LEN,0);
+	memset(ts->fw_name,0,TP_FW_NAME_MAX_LEN);
+	memset(ts->test_limit_name,0,TP_FW_NAME_MAX_LEN);
 
 	//sprintf(ts->manu_name, "TP_SYNAPTICS");
 	synaptics_rmi4_i2c_read_block(ts->client, F01_RMI_QUERY11,10, ts->manu_name);

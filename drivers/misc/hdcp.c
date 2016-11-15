@@ -1295,12 +1295,13 @@ static void hdcp_lib_msg_recvd(struct hdcp_lib_handle *handle)
 
 	/* check if it's a repeater */
 	if ((rsp_buf->msg[0] == SKE_SEND_EKS_MESSAGE_ID) &&
-			(rsp_buf->msglen == SKE_SEND_EKS_MESSAGE_SIZE)) {
+		 (rsp_buf->msglen == SKE_SEND_EKS_MESSAGE_SIZE)) {
 		if ((rsp_buf->flag ==
-			HDCP_TXMTR_SUBSTATE_WAITING_FOR_RECIEVERID_LIST) &&
-						(rsp_buf->timeout > 0))
+			 HDCP_TXMTR_SUBSTATE_WAITING_FOR_RECIEVERID_LIST) &&
+			 (rsp_buf->timeout > 0)) {
 			handle->repeater_flag = true;
 			handle->update_stream = true;
+		}
 	}
 
 	memset(handle->listener_buf, 0, MAX_TX_MESSAGE_SIZE);

@@ -985,21 +985,22 @@ CSID_TG:
 	/*Save sensor info*/
 	s_ctrl->sensordata->cam_slave_info = slave_info;
 
-    if (0 == slave_info->camera_id)
-        CameraID = R_CAMERA;
-    else
-        CameraID = F_CAMERA;
-    count = ARRAY_SIZE(match_tbl);
-    for (i = 0;i < count;i++) {
-        if (!strcmp(slave_info->sensor_name,match_tbl[i].sensor_name))
-            break;
-    }
-    if (i >= count)
-        pr_err("%s,Match camera sensor faild!,current sensor name is %s",
-            __func__,slave_info->sensor_name);
-    else
-        push_component_info(CameraID,slave_info->sensor_name,
-            match_tbl[i].vendor_name);
+	if (0 == slave_info->camera_id)
+		CameraID = R_CAMERA;
+	else
+		CameraID = F_CAMERA;
+	count = ARRAY_SIZE(match_tbl);
+	for (i = 0;i < count;i++) {
+		if (!strcmp(slave_info->sensor_name,match_tbl[i].sensor_name))
+			break;
+	}
+
+	if (i >= count)
+		pr_err("%s,Match camera sensor faild!,current sensor name is %s",
+			__func__,slave_info->sensor_name);
+	else
+		push_component_info(CameraID,slave_info->sensor_name,
+			match_tbl[i].vendor_name);
 
 	msm_sensor_fill_sensor_info(s_ctrl, probed_info, entity_name);
 
