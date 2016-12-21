@@ -29,6 +29,7 @@
 static unsigned int use_input_evts_with_hi_slvt_detect;
 static struct mutex managed_cpus_lock;
 static int touchboost = 1;
+static int freqlimit = 1;
 
 /* Maximum number to clusters that this module will manage*/
 static unsigned int num_clusters;
@@ -211,6 +212,29 @@ static const struct kernel_param_ops param_ops_touchboost = {
 	.get = get_touchboost,
 };
 device_param_cb(touchboost, &param_ops_touchboost, NULL, 0644);
+
+static int set_freqlimit(const char *buf, const struct kernel_param *kp)
+{
+	int val;
+
+	if (sscanf(buf, "%d\n", &val) != 1)
+		return -EINVAL;
+
+	freqlimit = val;
+
+	return 0;
+}
+
+static int get_freqlimit(char *buf, const struct kernel_param *kp)
+{
+	return snprintf(buf, PAGE_SIZE, "%d", freqlimit);
+}
+
+static const struct kernel_param_ops param_ops_freqlimit = {
+	.set = set_freqlimit,
+	.get = get_freqlimit,
+};
+device_param_cb(freqlimit, &param_ops_freqlimit, NULL, 0644);
 
 static int set_num_clusters(const char *buf, const struct kernel_param *kp)
 {
@@ -492,6 +516,10 @@ static int set_cpu_max_freq(const char *buf, const struct kernel_param *kp)
 	struct cpufreq_policy policy;
 	cpumask_var_t limit_mask;
 	int ret;
+	const char *reset = "0:2188800 1:2188800 2:2419200 3:2419200";
+
+	if (freqlimit == 0)
+		cp = reset;
 
 	while ((cp = strpbrk(cp + 1, " :")))
 		ntokens++;
@@ -500,7 +528,11 @@ static int set_cpu_max_freq(const char *buf, const struct kernel_param *kp)
 	if (!(ntokens % 2))
 		return -EINVAL;
 
-	cp = buf;
+	if (freqlimit == 0)
+		cp = reset;
+	else
+		cp = buf;
+
 	cpumask_clear(limit_mask);
 	for (i = 0; i < ntokens; i += 2) {
 		if (sscanf(cp, "%u:%u", &cpu, &val) != 2)
