@@ -78,6 +78,8 @@ source "drivers/staging/media/Kconfig"
 
 source "drivers/staging/android/Kconfig"
 
+source "drivers/staging/qcacld-2.0/Kconfig"
+
 source "drivers/staging/board/Kconfig"
 
 source "drivers/staging/ozwpan/Kconfig"
