@@ -654,7 +654,7 @@ enum {
     ISOC_DPU_FEEDBACK_ZERO_LENGTH,      /* The received fragment had no MPDU data at all. */
     ISOC_DPU_FEEDBACK_BAD_EXTIV,        /* The received AES or TKIP fragment did not have the EXTIV bit set in the IV field of the cryptographic envelope. */
     ISOC_DPU_FEEDBACK_BAD_KID,          /* The KID field extracted from the received fragment did not match that in the DPU descriptor (or the BD for WEP encryption modes). */
-    ISOC_DPU_FEEDBACK_BAD_WEP_SEED,     /* The received TKIP fragment?s computed WEP Seed did not match that in the IV. */
+    ISOC_DPU_FEEDBACK_BAD_WEP_SEED,     /* The received TKIP fragment�s computed WEP Seed did not match that in the IV. */
     ISOC_DPU_FEEDBACK_UNPROTECTED,      /* The received packet was unprotected, but the associated DPU descriptor had encryption enabled. */
     ISOC_DPU_FEEDBACK_PROTECTED,        /* The received packet was protected, but the associated DPU descriptor did not have an encryption mode enabled. */
     ISOC_DPU_FEEDBACK_BAD_REPLAY,       /* The received packet failed replay count checking. */

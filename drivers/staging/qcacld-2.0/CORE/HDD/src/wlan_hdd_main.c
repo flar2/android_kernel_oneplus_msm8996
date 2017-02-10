@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -1140,18 +1140,18 @@ int wlan_hdd_validate_context(hdd_context_t *pHddCtx)
 {
 
     if (NULL == pHddCtx || NULL == pHddCtx->cfg_ini) {
-        hddLog(LOGE, FL("%pS HDD context is Null"), (void *)_RET_IP_);
+        hddLog(LOG1, FL("%pS HDD context is Null"), (void *)_RET_IP_);
         return -ENODEV;
     }
 
     if (pHddCtx->isLogpInProgress) {
-        hddLog(LOGE, FL("%pS LOGP in Progress. Ignore!!!"), (void *)_RET_IP_);
+        hddLog(LOG1, FL("%pS LOGP in Progress. Ignore!!!"), (void *)_RET_IP_);
         return -EAGAIN;
     }
 
     if ((pHddCtx->isLoadInProgress) ||
         (pHddCtx->isUnloadInProgress)) {
-        hddLog(LOGE,
+        hddLog(LOG1,
              FL("%pS Unloading/Loading in Progress. Ignore!!!"),
              (void *)_RET_IP_);
         return -EAGAIN;
@@ -6345,7 +6345,7 @@ static int hdd_driver_command(hdd_adapter_t *pAdapter,
                                                    pAdapter->sessionId,
                                                    nOpportunisticThresholdDiff);
        }
-       else if (strncmp(priv_data.buf, "GETOPPORTUNISTICRSSIDIFF", 24) == 0)
+       else if (strncmp(command, "GETOPPORTUNISTICRSSIDIFF", 24) == 0)
        {
            tANI_S8 val = sme_GetRoamOpportunisticScanThresholdDiff(
                                                                  pHddCtx->hHal);
@@ -6388,7 +6388,7 @@ static int hdd_driver_command(hdd_adapter_t *pAdapter,
                                      pAdapter->sessionId,
                                      nRoamRescanRssiDiff);
        }
-       else if (strncmp(priv_data.buf, "GETROAMRESCANRSSIDIFF", 21) == 0)
+       else if (strncmp(command, "GETROAMRESCANRSSIDIFF", 21) == 0)
        {
            tANI_U8 val = sme_GetRoamRescanRssiDiff(pHddCtx->hHal);
            char extra[32];
@@ -9872,7 +9872,11 @@ static void __hdd_set_multicast_list(struct net_device *dev)
 
    /* Delete already configured multicast address list */
    if (0 < pAdapter->mc_addr_list.mc_cnt)
-      wlan_hdd_set_mc_addr_list(pAdapter, false);
+      if (wlan_hdd_set_mc_addr_list(pAdapter, false)) {
+           hddLog(VOS_TRACE_LEVEL_ERROR, FL("failed to clear mc addr list"));
+           return;
+      }
+
 
    if (dev->flags & IFF_ALLMULTI)
    {
@@ -9929,7 +9933,8 @@ static void __hdd_set_multicast_list(struct net_device *dev)
    }
 
    /* Configure the updated multicast address list */
-   wlan_hdd_set_mc_addr_list(pAdapter, true);
+   if (wlan_hdd_set_mc_addr_list(pAdapter, true))
+       hddLog(VOS_TRACE_LEVEL_INFO, FL("failed to set mc addr list"));
 
    EXIT();
    return;
@@ -10993,7 +10998,7 @@ hdd_adapter_t* hdd_open_adapter( hdd_context_t *pHddCtx, tANI_U8 session_type,
          pAdapter->device_mode = session_type;
 
          hdd_initialize_adapter_common(pAdapter);
-         status = hdd_init_ap_mode(pAdapter);
+         status = hdd_init_ap_mode(pAdapter, false);
          if( VOS_STATUS_SUCCESS != status )
             goto err_free_netdev;
 
@@ -11689,10 +11694,24 @@ VOS_STATUS hdd_reset_all_adapters( hdd_context_t *pHddCtx )
    while ( NULL != pAdapterNode && VOS_STATUS_SUCCESS == status )
    {
       pAdapter = pAdapterNode->pAdapter;
+
       hddLog(LOG1, FL("Disabling queues"));
-      wlan_hdd_netif_queue_control(pAdapter,
-          WLAN_NETIF_TX_DISABLE_N_CARRIER,
-          WLAN_CONTROL_PATH);
+
+      if (pHddCtx->cfg_ini->sap_internal_restart &&
+          pAdapter->device_mode == WLAN_HDD_SOFTAP) {
+          hddLog(LOG1, FL("driver supports sap restart"));
+          vos_flush_work(&pHddCtx->sap_start_work);
+          wlan_hdd_netif_queue_control(pAdapter,
+                                 WLAN_NETIF_TX_DISABLE,
+                                  WLAN_CONTROL_PATH);
+          hdd_sap_indicate_disconnect_for_sta(pAdapter);
+          hdd_cleanup_actionframe(pHddCtx, pAdapter);
+          hdd_sap_destroy_events(pAdapter);
+
+      } else
+          wlan_hdd_netif_queue_control(pAdapter,
+              WLAN_NETIF_TX_DISABLE_N_CARRIER,
+              WLAN_CONTROL_PATH);
 
       pAdapter->sessionCtx.station.hdd_ReassocScenario = VOS_FALSE;
 
@@ -11911,7 +11930,17 @@ VOS_STATUS hdd_start_all_adapters( hdd_context_t *pHddCtx )
             break;
 
          case WLAN_HDD_SOFTAP:
-            /* softAP can handle SSR */
+            if (pHddCtx->cfg_ini->sap_internal_restart) {
+                hdd_init_ap_mode(pAdapter, true);
+
+#ifdef QCA_LL_TX_FLOW_CT
+                WLANTL_RegisterTXFlowControl(pHddCtx->pvosContext,
+                          hdd_softap_tx_resume_cb,
+                          pAdapter->sessionId,
+                          (void *)pAdapter);
+#endif
+
+            }
             break;
 
          case WLAN_HDD_P2P_GO:
@@ -16790,11 +16819,17 @@ void hdd_unsafe_channel_restart_sap(hdd_context_t *hdd_ctx)
 						NULL,
 						0);
 
-				hdd_hostapd_stop(adapter->dev);
-
-				if (hdd_ctx->cfg_ini->sap_restrt_ch_avoid)
+				hddLog(LOG1, FL("driver to start sap: %d"),
+					hdd_ctx->cfg_ini->sap_internal_restart);
+				if (hdd_ctx->cfg_ini->sap_internal_restart) {
+					wlan_hdd_netif_queue_control(adapter,
+							WLAN_NETIF_TX_DISABLE,
+							WLAN_CONTROL_PATH);
 					schedule_work(
 					&hdd_ctx->sap_start_work);
+				}
+				else
+					hdd_hostapd_stop(adapter->dev);
 
 				return;
 			}
@@ -17698,7 +17733,7 @@ void wlan_hdd_stop_sap(hdd_adapter_t *ap_adapter)
  *
  * Return: void.
  */
-void wlan_hdd_start_sap(hdd_adapter_t *ap_adapter)
+void wlan_hdd_start_sap(hdd_adapter_t *ap_adapter, bool reinit)
 {
     hdd_ap_ctx_t *hdd_ap_ctx;
     hdd_hostapd_state_t *hostapd_state;
@@ -17717,8 +17752,13 @@ void wlan_hdd_start_sap(hdd_adapter_t *ap_adapter)
     hostapd_state = WLAN_HDD_GET_HOSTAP_STATE_PTR(ap_adapter);
     pConfig = &ap_adapter->sessionCtx.ap.sapConfig;
 
-    if (0 != wlan_hdd_validate_context(hdd_ctx))
-        return;
+    VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
+              FL("ssr in progress %d"), reinit);
+
+     if (!reinit) {
+        if (0 != wlan_hdd_validate_context(hdd_ctx))
+            return;
+    }
 
     mutex_lock(&hdd_ctx->sap_lock);
     if (test_bit(SOFTAP_BSS_STARTED, &ap_adapter->event_flags))
@@ -18130,6 +18170,9 @@ int hdd_init_packet_filtering(hdd_context_t *hdd_ctx,
 		hddLog(LOGE, FL("Could not allocate Memory"));
 		return -ENOMEM;
 	}
+
+	vos_mem_zero(adapter->mc_addr_list.addr,
+		(hdd_ctx->max_mc_addr_list * ETH_ALEN));
 
 	return 0;
 }
