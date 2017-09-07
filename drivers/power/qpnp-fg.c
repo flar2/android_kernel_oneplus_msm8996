@@ -4481,6 +4481,7 @@ static enum power_supply_property fg_power_props[] = {
 	POWER_SUPPLY_PROP_BATTERY_INFO,
 	POWER_SUPPLY_PROP_BATTERY_INFO_ID,
 	POWER_SUPPLY_PROP_BATTERY_4P4V_PRESENT,
+
 };
 
 static int fg_power_get_property(struct power_supply *psy,
@@ -9220,3 +9221,4 @@ module_exit(fg_exit);
 MODULE_DESCRIPTION("QPNP Fuel Gauge Driver");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:" QPNP_FG_DEV_NAME);
+

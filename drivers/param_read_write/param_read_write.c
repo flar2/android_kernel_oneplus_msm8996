@@ -271,6 +271,7 @@ static int param_get_data_stage(char *val, struct kernel_param *kp)
 
 module_param_call(data_stage, param_set_data_stage, param_get_data_stage, &data_stage, 0644);
 
+/* liochen@BSP, 2017/06/30, Add normal_reboot_count and abnormal_reboot_count */
 static int normal_reboot_count = 0;
 static int param_set_normal_reboot_count(const char *val, struct kernel_param *kp)
 {
@@ -328,6 +329,11 @@ static int param_get_abnormal_reboot_count(char *val, struct kernel_param *kp)
 
 }
 module_param_call(abnormal_reboot_count, param_set_abnormal_reboot_count, param_get_abnormal_reboot_count, &abnormal_reboot_count, 0644);
+
+/* liochen@BSP, 2017/06/30, Add normal_reboot_count and abnormal_reboot_count */
+
+
+/* liochen@BSP, 2017/05/15, Add update_count */
 static int update_count = 0;
 static int param_set_update_count(const char *val, struct kernel_param *kp)
 {
@@ -374,6 +380,7 @@ static int param_get_fastboot_count(char *val, struct kernel_param *kp)
 }
 
 module_param_call(fastboot_count, NULL, param_get_fastboot_count, &fastboot_count, 0644);
+/* liochen@BSP, 2017/05/15, Add update_count */
 
 static ssize_t param_read(struct file *file, char __user *buff,
             size_t count, loff_t *pos)

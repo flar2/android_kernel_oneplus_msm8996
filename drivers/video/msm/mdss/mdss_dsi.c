@@ -2720,7 +2720,7 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		break;
 	case MDSS_EVENT_PANEL_SET_SRGB_MODE:
 		ctrl_pdata->SRGB_mode= (int)(unsigned long) arg;
-		set_param_lcm_srgb_mode(&(ctrl_pdata->SRGB_mode));
+		//set_param_lcm_srgb_mode(&(ctrl_pdata->SRGB_mode));
 		mdss_dsi_panel_set_srgb_mode(ctrl_pdata,(int)(unsigned long) ctrl_pdata->SRGB_mode);
 		break;
 	case MDSS_EVENT_PANEL_GET_SRGB_MODE:
@@ -2728,7 +2728,7 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		break;
 	case MDSS_EVENT_PANEL_SET_ADOBE_RGB_MODE:
 		ctrl_pdata->Adobe_RGB_mode= (int)(unsigned long) arg;
-		set_param_lcm_srgb_mode(&(ctrl_pdata->Adobe_RGB_mode));
+		//set_param_lcm_srgb_mode(&(ctrl_pdata->Adobe_RGB_mode));
 		mdss_dsi_panel_set_adobe_rgb_mode(ctrl_pdata,(int)(unsigned long) ctrl_pdata->Adobe_RGB_mode);
 		break;
 	case MDSS_EVENT_PANEL_GET_ADOBE_RGB_MODE:
@@ -2736,11 +2736,25 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		break;
 	case MDSS_EVENT_PANEL_SET_DCI_P3_MODE:
 		ctrl_pdata->dci_p3_mode= (int)(unsigned long) arg;
-		set_param_lcm_srgb_mode(&(ctrl_pdata->dci_p3_mode));
+		//set_param_lcm_srgb_mode(&(ctrl_pdata->dci_p3_mode));
 		mdss_dsi_panel_set_dci_p3_mode(ctrl_pdata,(int)(unsigned long) ctrl_pdata->dci_p3_mode);
 		break;
 	case MDSS_EVENT_PANEL_GET_DCI_P3_MODE:
 		rc = mdss_dsi_panel_get_dci_p3_mode(ctrl_pdata);
+		break;
+	case MDSS_EVENT_PANEL_SET_NIGHT_MODE:
+		ctrl_pdata->night_mode= (int)(unsigned long) arg;
+		mdss_dsi_panel_set_night_mode(ctrl_pdata, (int)(unsigned long) ctrl_pdata->night_mode);
+		break;
+	case MDSS_EVENT_PANEL_GET_NIGHT_MODE:
+		rc = mdss_dsi_panel_get_night_mode(ctrl_pdata);
+		break;
+	case MDSS_EVENT_PANEL_SET_ONEPLUS_MODE:
+		ctrl_pdata->oneplus_mode= (int)(unsigned long) arg;
+		mdss_dsi_panel_set_oneplus_mode(ctrl_pdata, (int)(unsigned long) ctrl_pdata->oneplus_mode);
+		break;
+	case MDSS_EVENT_PANEL_GET_ONEPLUS_MODE:
+		rc = mdss_dsi_panel_get_oneplus_mode(ctrl_pdata);
 		break;
 	default:
 		pr_debug("%s: unhandled event=%d\n", __func__, event);

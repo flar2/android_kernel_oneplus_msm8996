@@ -440,6 +440,7 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler	= sched_hmp_proc_update_handler,
 	},
+
 	{
 		.procname	= "affinity_switch",
 		.data		= &sysctl_affinity_switch,
