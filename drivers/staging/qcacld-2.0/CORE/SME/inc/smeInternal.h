@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -70,6 +70,7 @@ typedef enum eSmeCommandType
     eSmeCommandAddStaSession,
     eSmeCommandDelStaSession,
     eSmeCommandSetMaxTxPower,
+    eSmeCommandSetMaxTxPowerPerBand,
 #ifdef FEATURE_WLAN_TDLS
     //eSmeTdlsCommandMask = 0x80000,  //To identify TDLS commands <TODO>
     //These can be considered as csr commands.
@@ -132,6 +133,16 @@ typedef struct sStatsExtEvent {
     tANI_U8 event_data[];
 } tStatsExtEvent, *tpStatsExtEvent;
 
+/**
+ * struct stats_ext2_event - stats ext2 event
+ * @hole_cnt: hole counter
+ * @hole_info_array: hole informaton
+ */
+struct stats_ext2_event {
+	uint32_t hole_cnt;
+	uint32_t hole_info_array[];
+};
+
 #define MAX_ACTIVE_CMD_STATS    16
 
 typedef struct sActiveCmdStats {
@@ -178,7 +189,14 @@ typedef struct tagSmeStruct
 #ifdef WLAN_FEATURE_LINK_LAYER_STATS
     void(*pLinkLayerStatsIndCallback)(void *callbackContext,
                                         int indType, void *pRsp);
+    void (*link_layer_stats_ext_cb)(tSirLLStatsResults *rsp);
 #endif /* WLAN_FEATURE_LINK_LAYER_STATS */
+
+#ifdef WLAN_POWER_DEBUGFS
+    void *power_debug_stats_context;
+    void(*power_stats_resp_callback)(struct power_stats_response *rsp,
+				    void *callback_context);
+#endif
 #ifdef FEATURE_WLAN_AUTO_SHUTDOWN
     void (*pAutoShutdownNotificationCb) (void);
 #endif
@@ -188,12 +206,21 @@ typedef struct tagSmeStruct
     /* link speed callback */
     void (*pLinkSpeedIndCb) (tSirLinkSpeedInfo *indParam, void *pDevContext);
     void *pLinkSpeedCbContext;
-    /* get rssi callback */
-    void (*pget_rssi_ind_cb) (struct sir_rssi_resp *param, void *pcontext);
-    void *pget_rssi_cb_context;
+    /* get peer info callback */
+    void (*pget_peer_info_ind_cb) (struct sir_peer_info_resp *param,
+		    void *pcontext);
+    void *pget_peer_info_cb_context;
+    /* get extended peer info callback */
+    void (*pget_peer_info_ext_ind_cb) (struct sir_peer_info_ext_resp *param,
+		    void *pcontext);
+    void *pget_peer_info_ext_cb_context;
+    /* get isolation callback */
+    void (*get_isolation) (struct sir_isolation_resp *param, void *context);
+    void *get_isolation_cb_context;
 #ifdef FEATURE_WLAN_EXTSCAN
     void (*pExtScanIndCb) (void *, const tANI_U16, void *);
 #endif /* FEATURE_WLAN_EXTSCAN */
+    void  (*pchain_rssi_ind_cb)(void *, void *);
 #ifdef WLAN_FEATURE_NAN
     void (*nanCallback) (void*, tSirNanEvent*);
 #endif
@@ -222,6 +249,8 @@ typedef struct tagSmeStruct
     ocb_callback dcc_update_ndl_callback;
     void *dcc_stats_event_context;
     ocb_callback dcc_stats_event_callback;
+    void *radio_chan_stats_context;
+    ocb_callback radio_chan_stats_callback;
 #ifdef WLAN_FEATURE_MEMDUMP
     void (*fw_dump_callback)(void *context, struct fw_dump_rsp *rsp);
 #endif
@@ -235,6 +264,9 @@ typedef struct tagSmeStruct
     void (*pbpf_get_offload_cb)(void *context, struct sir_bpf_get_offload *);
     void *mib_stats_context;
     void (*csr_mib_stats_callback) (struct mib_stats_metrics*, void*);
+    void (*stats_ext2_cb)(void *, struct stats_ext2_event *);
+    void (*chip_power_save_fail_cb)(void *,
+			struct chip_pwr_save_fail_detected_params *);
 } tSmeStruct, *tpSmeStruct;
 
 

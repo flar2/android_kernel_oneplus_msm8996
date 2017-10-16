@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2014, 2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2014, 2016-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -72,7 +72,6 @@ logDeinit(tpAniSirGlobal );
 extern tSirRetStatus cfgInit(tpAniSirGlobal);
 extern void cfgDeInit(tpAniSirGlobal);
 
-// -------------------------------------------------------------------
 /**
  * sirDumpBuf()
  *
@@ -89,9 +88,25 @@ extern void cfgDeInit(tpAniSirGlobal);
  * @param pBuf: buffer pointer
  * @return None.
  */
+void sirDumpBuf(tpAniSirGlobal pMac, tANI_U8 modId, tANI_U32 level,
+		tANI_U8 *buf, tANI_U32 size);
 
-void sirDumpBuf(tpAniSirGlobal pMac, tANI_U8 modId, tANI_U32 level, tANI_U8 *buf, tANI_U32 size);
-
+#ifdef WLAN_FEATURE_DSRC
+/**
+ * sir_copy_sir_ocb_config() - Performs deep copy of an OCB configuration
+ * @src: the source configuration
+ *
+ * Return: pointer to the copied OCB configuration
+ */
+struct sir_ocb_config *
+sir_copy_sir_ocb_config(const struct sir_ocb_config *src);
+#else
+static inline struct sir_ocb_config *
+sir_copy_sir_ocb_config(const struct sir_ocb_config *src)
+{
+	return NULL;
+}
+#endif /* WLAN_FEATURE_DSRC */
 
 // --------------------------------------------------------------------
 /**
@@ -706,7 +721,7 @@ halRoundS32(tANI_S32 p)
     else
         k = p;
 
-        return(k);
+    return(k);
 }
 
 /* New functions for endianness conversion */

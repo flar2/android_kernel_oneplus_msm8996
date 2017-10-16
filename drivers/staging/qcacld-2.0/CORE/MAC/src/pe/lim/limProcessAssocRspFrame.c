@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -38,7 +38,7 @@
  */
 
 #include "wniApi.h"
-#include "wniCfgSta.h"
+#include "wni_cfg.h"
 #include "aniGlobal.h"
 #include "cfgApi.h"
 
@@ -55,6 +55,7 @@
 #if defined(FEATURE_WLAN_ESE) && !defined(FEATURE_WLAN_ESE_UPLOAD)
 #include "eseApi.h"
 #endif
+#include "lim_process_fils.h"
 
 extern tSirRetStatus schBeaconEdcaProcess(tpAniSirGlobal pMac, tSirMacEdcaParamSetIE *edca, tpPESession psessionEntry);
 
@@ -114,53 +115,61 @@ void limUpdateAssocStaDatas(tpAniSirGlobal pMac, tpDphHashNode pStaDs, tpSirAsso
                else
                    pStaDs->htSupportedChannelWidthSet = eHT_CHANNEL_WIDTH_20MHZ;
 
-                   pStaDs->htLsigTXOPProtection = ( tANI_U8 ) pAssocRsp->HTCaps.lsigTXOPProtection;
-                   pStaDs->htMIMOPSState =  (tSirMacHTMIMOPowerSaveState)pAssocRsp->HTCaps.mimoPowerSave;
-                   pStaDs->htMaxAmsduLength = ( tANI_U8 ) pAssocRsp->HTCaps.maximalAMSDUsize;
-                   pStaDs->htAMpduDensity =             pAssocRsp->HTCaps.mpduDensity;
-                   pStaDs->htDsssCckRate40MHzSupport = (tANI_U8)pAssocRsp->HTCaps.dsssCckMode40MHz;
-                   pStaDs->htMaxRxAMpduFactor = pAssocRsp->HTCaps.maxRxAMPDUFactor;
-                   limFillRxHighestSupportedRate(pMac, &rxHighestRate, pAssocRsp->HTCaps.supportedMCSSet);
-                   pStaDs->supportedRates.rxHighestDataRate = rxHighestRate;
-                   /* This is for AP as peer STA and we are INFRA STA. We will put APs offset in dph node which is peer STA */
-                   pStaDs->htSecondaryChannelOffset = (tANI_U8)pAssocRsp->HTInfo.secondaryChannelOffset;
+               pStaDs->htLsigTXOPProtection =
+	       ( tANI_U8 ) pAssocRsp->HTCaps.lsigTXOPProtection;
+               pStaDs->htMIMOPSState =
+	       (tSirMacHTMIMOPowerSaveState)pAssocRsp->HTCaps.mimoPowerSave;
+               pStaDs->htMaxAmsduLength =
+	       ( tANI_U8 ) pAssocRsp->HTCaps.maximalAMSDUsize;
+               pStaDs->htAMpduDensity = pAssocRsp->HTCaps.mpduDensity;
+               pStaDs->htDsssCckRate40MHzSupport =
+	       (tANI_U8)pAssocRsp->HTCaps.dsssCckMode40MHz;
+               pStaDs->htMaxRxAMpduFactor = pAssocRsp->HTCaps.maxRxAMPDUFactor;
+               limFillRxHighestSupportedRate(pMac, &rxHighestRate,
+	       		pAssocRsp->HTCaps.supportedMCSSet);
+               pStaDs->supportedRates.rxHighestDataRate = rxHighestRate;
+               /* This is for AP as peer STA and we are INFRA STA.
+	        * We will put APs offset in dph node which is peer STA
+		*/
+               pStaDs->htSecondaryChannelOffset =
+	       (tANI_U8)pAssocRsp->HTInfo.secondaryChannelOffset;
 
-                   //FIXME_AMPDU
-                   // In the future, may need to check for "assoc.HTCaps.delayedBA"
-                   // For now, it is IMMEDIATE BA only on ALL TID's
-                   pStaDs->baPolicyFlag = 0xFF;
+               //FIXME_AMPDU
+               // In the future, may need to check for "assoc.HTCaps.delayedBA"
+               // For now, it is IMMEDIATE BA only on ALL TID's
+               pStaDs->baPolicyFlag = 0xFF;
 
-                   /*
-                    * Check if we have support for gShortGI20Mhz and
-                    * gShortGI40Mhz from ini file.
-                    */
-                   if (HAL_STATUS_SUCCESS(ccmCfgGetInt(pMac,
+               /*
+                * Check if we have support for gShortGI20Mhz and
+                * gShortGI40Mhz from ini file.
+                */
+               if (HAL_STATUS_SUCCESS(ccmCfgGetInt(pMac,
                                           WNI_CFG_SHORT_GI_20MHZ,
                                           &shortgi_20mhz_support))) {
-                       if (VOS_TRUE == shortgi_20mhz_support)
-                           pStaDs->htShortGI20Mhz =
+                   if (VOS_TRUE == shortgi_20mhz_support)
+                       pStaDs->htShortGI20Mhz =
                                   (tANI_U8)pAssocRsp->HTCaps.shortGI20MHz;
-                       else
-                           pStaDs->htShortGI20Mhz = VOS_FALSE;
-                   } else {
-                       limLog(pMac, LOGE,
-                              FL("could not retrieve shortGI 20Mhz CFG, setting value to default"));
-                       pStaDs->htShortGI20Mhz = WNI_CFG_SHORT_GI_20MHZ_STADEF;
-                   }
+                   else
+                       pStaDs->htShortGI20Mhz = VOS_FALSE;
+               } else {
+                   limLog(pMac, LOGE,
+                       FL("could not retrieve shortGI 20Mhz CFG, setting value to default"));
+                   pStaDs->htShortGI20Mhz = WNI_CFG_SHORT_GI_20MHZ_STADEF;
+               }
 
-                   if (HAL_STATUS_SUCCESS(ccmCfgGetInt(pMac,
+               if (HAL_STATUS_SUCCESS(ccmCfgGetInt(pMac,
                                           WNI_CFG_SHORT_GI_40MHZ,
                                           &shortgi_40mhz_support))) {
-                       if (VOS_TRUE == shortgi_40mhz_support)
-                           pStaDs->htShortGI40Mhz =
+                   if (VOS_TRUE == shortgi_40mhz_support)
+                       pStaDs->htShortGI40Mhz =
                                    (tANI_U8)pAssocRsp->HTCaps.shortGI40MHz;
-                       else
-                           pStaDs->htShortGI40Mhz = VOS_FALSE;
-                   } else {
-                       limLog(pMac, LOGE,
-                              FL("could not retrieve shortGI 40Mhz CFG,setting value to default"));
-                       pStaDs->htShortGI40Mhz = WNI_CFG_SHORT_GI_40MHZ_STADEF;
-                   }
+                   else
+                       pStaDs->htShortGI40Mhz = VOS_FALSE;
+               } else {
+                   limLog(pMac, LOGE,
+                      FL("could not retrieve shortGI 40Mhz CFG,setting value to default"));
+                   pStaDs->htShortGI40Mhz = WNI_CFG_SHORT_GI_40MHZ_STADEF;
+               }
            }
        }
 
@@ -377,10 +386,6 @@ limProcessAssocRspFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo, tANI_U8 sub
         limLog(pMac, LOGE,
                FL("LFR3: Reassoc response packet header is NULL"));
         return;
-    } else if ( pHdr->sa == NULL) {
-        limLog(pMac, LOGE,
-               FL("LFR3: Reassoc response packet source address is NULL"));
-        return;
     }
 
     limLog(pMac, LOG1,
@@ -510,9 +515,8 @@ limProcessAssocRspFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo, tANI_U8 sub
 #endif
     pBody = WDA_GET_RX_MPDU_DATA(pRxPacketInfo);
 
-    // parse Re/Association Response frame.
     if (sirConvertAssocRespFrame2Struct(
-                        pMac, pBody, frameLen, pAssocRsp) == eSIR_FAILURE)
+                        pMac, psessionEntry, pBody, frameLen, pAssocRsp) == eSIR_FAILURE)
     {
         vos_mem_free(pAssocRsp);
         PELOGE(limLog(pMac, LOGE, FL("Parse error Assoc resp subtype %d,"
@@ -540,16 +544,18 @@ limProcessAssocRspFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo, tANI_U8 sub
         psessionEntry->assocRspLen = 0;
     }
 
-    psessionEntry->assocRsp = vos_mem_malloc(frameLen);
-    if (NULL == psessionEntry->assocRsp)
-    {
-        PELOGE(limLog(pMac, LOGE, FL("Unable to allocate memory to store assoc response, len = %d"), frameLen);)
-    }
-    else
-    {
-        //Store the Assoc response. This is sent to csr/hdd in join cnf response.
-        vos_mem_copy(psessionEntry->assocRsp, pBody, frameLen);
-        psessionEntry->assocRspLen = frameLen;
+    if (frameLen) {
+        psessionEntry->assocRsp = vos_mem_malloc(frameLen);
+        if (NULL == psessionEntry->assocRsp)
+        {
+            PELOGE(limLog(pMac, LOGE, FL("Unable to allocate memory to store assoc response, len = %d"), frameLen);)
+        }
+        else
+        {
+            //Store the Assoc response. This is sent to csr/hdd in join cnf response.
+            vos_mem_copy(psessionEntry->assocRsp, pBody, frameLen);
+            psessionEntry->assocRspLen = frameLen;
+        }
     }
 
 #ifdef WLAN_FEATURE_VOWIFI_11R
@@ -718,6 +724,20 @@ limProcessAssocRspFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo, tANI_U8 sub
         limSendDisassocMgmtFrame(pMac, eSIR_MAC_UNSPEC_FAILURE_REASON,
                                  pHdr->sa, psessionEntry, FALSE);
 
+        goto assocReject;
+    }
+
+    if (!lim_verify_fils_params_assoc_rsp(pMac, psessionEntry,
+                                       pAssocRsp, &mlmAssocCnf))
+    {
+        /* Log error */
+        PELOGW(limLog(pMac, LOGE, "FILS params doesnot match");)
+        mlmAssocCnf.resultCode = eSIR_SME_INVALID_ASSOC_RSP_RXED;
+        mlmAssocCnf.protStatusCode = eSIR_MAC_UNSPEC_FAILURE_STATUS;
+
+        /* Send advisory Disassociation frame to AP */
+        limSendDisassocMgmtFrame(pMac, eSIR_MAC_UNSPEC_FAILURE_REASON,
+                                 pHdr->sa, psessionEntry, FALSE);
         goto assocReject;
     }
     // Association Response received with success code
@@ -987,6 +1007,17 @@ limProcessAssocRspFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo, tANI_U8 sub
       (tANI_U8 *) psessionEntry->pLimJoinReq->bssDescription.ieFields,
       GET_IE_LEN_IN_BSS(psessionEntry->pLimJoinReq->bssDescription.length),
       pBeaconStruct);
+
+    if (pBeaconStruct->VHTCaps.present)
+        psessionEntry->vht_caps = pBeaconStruct->VHTCaps;
+    if (pBeaconStruct->HTCaps.present)
+        psessionEntry->ht_caps = pBeaconStruct->HTCaps;
+    if (pBeaconStruct->hs20vendor_ie.present)
+        psessionEntry->hs20vendor_ie = pBeaconStruct->hs20vendor_ie;
+    if (pBeaconStruct->HTInfo.present)
+        psessionEntry->ht_operation = pBeaconStruct->HTInfo;
+    if (pBeaconStruct->VHTOperation.present)
+        psessionEntry->vht_operation = pBeaconStruct->VHTOperation;
 
     if(pMac->lim.gLimProtectionControl != WNI_CFG_FORCE_POLICY_PROTECTION_DISABLE)
         limDecideStaProtectionOnAssoc(pMac, pBeaconStruct, psessionEntry);

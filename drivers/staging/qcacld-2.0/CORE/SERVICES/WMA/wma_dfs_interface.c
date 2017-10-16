@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013,2016-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -60,16 +60,12 @@
 #include "ath_dfs_structs.h"
 #include "wma_dfs_interface.h"
 
-#ifndef ATH_SUPPORT_DFS
-#define ATH_SUPPORT_DFS 1
-#endif
-
 int
 ol_if_dfs_attach(struct ieee80211com *ic, void *ptr, void *radar_info)
 {
     struct ath_dfs_caps *pCap = (struct ath_dfs_caps *) ptr;
 
-    adf_os_print("%s: called; ptr=%p, radar_info=%p\n",
+    adf_os_print("%s: called; ptr=%pK, radar_info=%pK\n",
                   __func__, ptr, radar_info);
 
     pCap->ath_chip_is_bb_tlv = 1;
@@ -208,7 +204,7 @@ ol_if_dfs_get_mib_cycle_counts_pct(struct ieee80211com *ic,
 u_int16_t
 ol_if_dfs_usenol(struct ieee80211com *ic)
 {
-#if ATH_SUPPORT_DFS
+#ifdef ATH_SUPPORT_DFS
     return(dfs_usenol(ic));
 #else
     return (0);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014, 2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2014, 2016-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -40,7 +40,7 @@
 #include "wniApi.h"
 #include "sirApi.h"
 #include "aniGlobal.h"
-#include "wniCfgSta.h"
+#include "wni_cfg.h"
 #include "schApi.h"
 #include "utilsApi.h"
 #include "limTypes.h"
@@ -99,6 +99,13 @@ void limStopTxAndSwitchChannel(tpAniSirGlobal pMac, tANI_U8 sessionId)
     {
       limLog(pMac, LOGE, FL("Session %d not active"), sessionId);
       return;
+    }
+
+    if(psessionEntry->ftPEContext.pFTPreAuthReq)
+    {
+        limLog(pMac, LOGE,
+           FL("Avoid Switch Channel req during pre auth"));
+        return;
     }
 
     /*
@@ -1323,7 +1330,7 @@ __limProcessRadioMeasureRequest( tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo ,tp
 
      limSendSmeMgmtFrameInd(pMac, pHdr->fc.subType, (tANI_U8*)pHdr,
           frameLen + sizeof(tSirMacMgmtHdr), 0, WDA_GET_RX_CH(pRxPacketInfo),
-          psessionEntry, 0);
+          psessionEntry, WDA_GET_RX_RSSI_NORMALIZED(pRxPacketInfo));
 
      /**Unpack the received frame */
      nStatus = dot11fUnpackRadioMeasurementRequest( pMac, pBody, frameLen, &frm );
@@ -1525,7 +1532,8 @@ static void __limProcessSAQueryResponseActionFrame(tpAniSirGlobal pMac, tANI_U8 
         limSendSmeMgmtFrameInd(pMac, pHdr->fc.subType, (tANI_U8*)pHdr,
                                frameLen + sizeof(tSirMacMgmtHdr), 0,
                                WDA_GET_RX_CH( pRxPacketInfo ),
-                               psessionEntry, 0);
+                               psessionEntry,
+                               WDA_GET_RX_RSSI_NORMALIZED(pRxPacketInfo));
         return;
     }
 
@@ -1796,7 +1804,9 @@ limProcessActionFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,tpPESession ps
     }
 #if defined WLAN_FEATURE_VOWIFI
     case SIR_MAC_ACTION_RRM:
-        if( pMac->rrm.rrmPEContext.rrmEnable )
+        /* Ignore RRM measurement request until DHCP is set */
+        if (pMac->rrm.rrmPEContext.rrmEnable &&
+           pMac->roam.roamSession[psessionEntry->smeSessionId].dhcp_done)
         {
             switch(pActionHdr->actionID) {
                 case SIR_MAC_RRM_RADIO_MEASURE_REQ:
@@ -1818,9 +1828,11 @@ limProcessActionFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,tpPESession ps
         }
         else
         {
-            // Else we will just ignore the RRM messages.
+            /* Else we will just ignore the RRM messages.*/
             limLog(pMac, LOG1,
-              FL("RRM Action frame ignored as RRM is disabled in cfg"));
+              FL("RRM Action frame ignored as rrmEnable is %d or DHCP not completed %d"),
+              pMac->rrm.rrmPEContext.rrmEnable,
+              pMac->roam.roamSession[psessionEntry->smeSessionId].dhcp_done);
         }
         break;
 #endif
@@ -1876,6 +1888,12 @@ limProcessActionFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,tpPESession ps
               pHdr = WDA_GET_RX_MAC_HEADER(pRxPacketInfo);
               frameLen = WDA_GET_RX_PAYLOAD_LEN(pRxPacketInfo);
 
+              if (frameLen < sizeof(pPubAction)) {
+                limLog(pMac, LOG1,
+                  FL("Received action frame of invalid len %d"), frameLen);
+                break;
+              }
+
               //Check if it is a P2P public action frame.
               if (vos_mem_compare(pPubAction->Oui, P2POui, 4))
               {
@@ -1884,7 +1902,8 @@ limProcessActionFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,tpPESession ps
                  limSendSmeMgmtFrameInd(pMac, pHdr->fc.subType,
                     (tANI_U8*)pHdr, frameLen + sizeof(tSirMacMgmtHdr),
                     psessionEntry->smeSessionId,
-                    WDA_GET_RX_CH( pRxPacketInfo ), psessionEntry, 0);
+                    WDA_GET_RX_CH( pRxPacketInfo ), psessionEntry,
+                    WDA_GET_RX_RSSI_NORMALIZED(pRxPacketInfo));
               }
               else
               {
@@ -1907,7 +1926,8 @@ limProcessActionFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,tpPESession ps
               limSendSmeMgmtFrameInd(pMac, pHdr->fc.subType,
                     (tANI_U8*)pHdr, frameLen + sizeof(tSirMacMgmtHdr),
                     psessionEntry->smeSessionId,
-                    WDA_GET_RX_CH( pRxPacketInfo ), psessionEntry, 0);
+                    WDA_GET_RX_CH( pRxPacketInfo ), psessionEntry,
+                    WDA_GET_RX_RSSI_NORMALIZED(pRxPacketInfo));
             }
             break;
 #ifdef FEATURE_WLAN_TDLS
@@ -2001,7 +2021,8 @@ limProcessActionFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,tpPESession ps
                                frameLen + sizeof(tSirMacMgmtHdr),
                                psessionEntry->smeSessionId,
                                WDA_GET_RX_CH(pRxPacketInfo),
-                               psessionEntry, 0);
+                               psessionEntry,
+                               WDA_GET_RX_RSSI_NORMALIZED(pRxPacketInfo));
         break;
     }
     default:
@@ -2052,6 +2073,12 @@ limProcessActionFrameNoSession(tpAniSirGlobal pMac, tANI_U8 *pBd)
 
                 pHdr = WDA_GET_RX_MAC_HEADER(pBd);
                 frameLen = WDA_GET_RX_PAYLOAD_LEN(pBd);
+
+                if (frameLen < sizeof(pActionHdr)) {
+                  limLog(pMac, LOG1,
+                    FL("Received action frame of invalid len %d"), frameLen);
+                  break;
+                }
 
                 //Check if it is a P2P public action frame.
                 if (vos_mem_compare(pActionHdr->Oui, P2POui, 4))

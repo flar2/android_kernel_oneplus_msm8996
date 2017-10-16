@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -246,6 +246,7 @@ typedef struct sSapContext {
     v_U32_t           nStaAddIeLength;
     v_U8_t            pStaAddIE[MAX_ASSOC_IND_IE_LEN];
     v_U8_t            *channelList;
+    uint8_t            num_of_channel;
     tSapChannelListInfo SapChnlList;
     uint16_t           vht_channel_width;
     uint16_t           ch_width_orig;
@@ -266,6 +267,7 @@ typedef struct sSapContext {
     eCsrBand           currentPreferredBand;
     eCsrBand           scanBandPreference;
     v_U16_t            acsBandSwitchThreshold;
+    uint32_t           auto_channel_select_weight;
     tSapAcsChannelInfo acsBestChannelInfo;
     tANI_BOOLEAN       enableOverLapCh;
 
@@ -301,6 +303,10 @@ typedef struct sSapContext {
     tSirMacRateSet supp_rate_set;
     tSirMacRateSet extended_rate_set;
     vos_event_t sap_session_opened_evt;
+    vos_event_t sap_session_closed_evt;
+    eCsrBand	target_band;
+    uint8_t     sub20_channelwidth;
+    uint32_t    backup_channel;
 } *ptSapContext;
 
 
@@ -980,8 +986,6 @@ SIDE EFFECTS
 ---------------------------------------------------------------------------*/
 void sap_CacResetNotify(tHalHandle hHal);
 
-v_BOOL_t sapAcsChannelCheck(ptSapContext sapContext, v_U8_t channelNumber);
-
 /*
  * This function is added to check if channel is in tx leak range
  *
@@ -1094,7 +1098,18 @@ eHalStatus sap_CloseSession(tHalHandle hHal,
                             ptSapContext sapContext,
                             csrRoamSessionCloseCallback callback,
                             v_BOOL_t valid);
+#ifdef FEATURE_WLAN_MCC_TO_SCC_SWITCH
+bool
+sap_channel_switch_validate(
+	ptSapContext sap_context,
+	tHalHandle hal,
+	uint16_t target_channel,
+	eCsrPhyMode sap_phy_mode,
+	uint8_t cc_switch_mode,
+	uint32_t session_id);
+#endif
 #ifdef __cplusplus
 }
 #endif
+uint8_t sap_select_default_oper_chan_ini(tHalHandle hal, uint32_t acs_11a);
 #endif /* #ifndef WLAN_QCT_WLANSAP_INTERNAL_H */

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -28,6 +28,9 @@
 #if !defined( __LIM_SESSION_H )
 #define __LIM_SESSION_H
 
+#ifdef WLAN_FEATURE_FILS_SK
+#include "lim_fils_defs.h"
+#endif
 /**=========================================================================
 
   \file  limSession.h
@@ -358,6 +361,8 @@ typedef struct sPESession           // Added to Support BT-AMP
     tLimChannelSwitchInfo  gLimChannelSwitch;
     /* *********************End 11H related*****************************/
 
+    uint8_t    lim_sub20_channel_switch_bandwidth;
+
     /*Flag to Track Status/Indicate HBFailure on this session */
     tANI_BOOLEAN LimHBFailureStatus;
     tANI_U32           gLimPhyMode;
@@ -493,6 +498,8 @@ typedef struct sPESession           // Added to Support BT-AMP
 #ifdef FEATURE_WLAN_ESE
     uint8_t is_ese_version_ie_present;
 #endif
+    /* HS 2.0 Indication */
+    tDot11fIEhs20vendor_ie hs20vendor_ie;
     /* flag to indicate country code in beacon */
     tANI_U8 countryInfoPresent;
     uint8_t vdev_nss;
@@ -501,6 +508,10 @@ typedef struct sPESession           // Added to Support BT-AMP
     /* Supported NSS is intersection of self and peer NSS */
     bool supported_nss_1x1;
     bool is_ext_caps_present;
+    tDot11fIEHTCaps ht_caps;
+    tDot11fIEVHTCaps vht_caps;
+    tDot11fIEHTInfo ht_operation;
+    tDot11fIEVHTOperation vht_operation;
     bool is_vendor_specific_vhtcaps;
     uint8_t vendor_specific_vht_ie_type;
     uint8_t vendor_specific_vht_ie_sub_type;
@@ -508,7 +519,16 @@ typedef struct sPESession           // Added to Support BT-AMP
     uint16_t beacon_tx_rate;
     uint8_t *access_policy_vendor_ie;
     uint8_t access_policy;
-
+    uint8_t sap_sub20_channelwidth;
+    uint8_t sub20_channelwidth;
+    uint8_t vht_channel_width;
+    /* Number of STAs that do not support ECSA capability */
+    uint8_t lim_non_ecsa_cap_num;
+    uint32_t sta_auth_retries_for_code17;
+    bool force_24ghz_in_ht20;
+#ifdef WLAN_FEATURE_FILS_SK
+    struct pe_fils_session *fils_info;
+#endif
 } tPESession, *tpPESession;
 
 /*-------------------------------------------------------------------------
@@ -652,4 +672,13 @@ uint8_t pe_count_session_with_sme_session_id(tpAniSirGlobal mac_ctx,
 	uint8_t sme_session_id);
 
 int pe_get_active_session_count(tpAniSirGlobal mac_ctx);
+#ifdef WLAN_FEATURE_FILS_SK
+/**
+ * pe_delete_fils_info: API to delete fils session info
+ * @session: pe session
+ *
+ * Return: void
+ */
+void pe_delete_fils_info(tpPESession session);
+#endif
 #endif //#if !defined( __LIM_SESSION_H )

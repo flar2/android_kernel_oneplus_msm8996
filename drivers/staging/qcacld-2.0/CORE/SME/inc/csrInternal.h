@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -599,8 +599,6 @@ typedef struct tagCsrConfig
     tANI_U32  nInitialDwellTime;     //in units of milliseconds
     bool      initial_scan_no_dfs_chnl;
 
-    tANI_U32  nActiveMinChnTimeBtc;     //in units of milliseconds
-    tANI_U32  nActiveMaxChnTimeBtc;     //in units of milliseconds
     tANI_U8   disableAggWithBtc;
 #ifdef WLAN_AP_STA_CONCURRENCY
     tANI_U32  nPassiveMinChnTimeConc;    //in units of milliseconds
@@ -614,10 +612,6 @@ typedef struct tagCsrConfig
     /* In units of milliseconds */
     tANI_U32  idle_time_conc;
 
-    tANI_U8   nNumStaChanCombinedConc;   //number of channels combined for
-                                         //Sta in each split scan operation
-    tANI_U8   nNumP2PChanCombinedConc;   //number of channels combined for
-                                         //P2P in each split scan operation
 #endif
 
     tANI_BOOLEAN IsIdleScanEnabled;
@@ -772,9 +766,6 @@ typedef struct tagCsrScanStruct
     tANI_BOOLEAN fScanEnable;
     tANI_BOOLEAN fFullScanIssued;
     vos_timer_t hTimerGetResult;
-#ifdef WLAN_AP_STA_CONCURRENCY
-    vos_timer_t hTimerStaApConcTimer;
-#endif
     vos_timer_t hTimerIdleScan;
     //changes on every scan, it is used as a flag for whether 11d info is found on every scan
     tANI_U8 channelOf11dInfo;
@@ -1064,6 +1055,11 @@ typedef struct tagCsrRoamSession
     bool ch_switch_in_progress;
     bool supported_nss_1x1;
     bool disable_hi_rssi;
+    bool dhcp_done;
+#ifdef WLAN_FEATURE_FILS_SK
+    bool is_fils_connection;
+    uint16_t fils_seq_num;
+#endif
 } tCsrRoamSession;
 
 typedef struct tagCsrRoamStruct
@@ -1122,6 +1118,7 @@ typedef struct tagCsrRoamStruct
     tANI_U16 reassocRespLen;  /* length of reassociation response */
 #endif
     vos_timer_t packetdump_timer;
+    tANI_BOOLEAN pending_roam_disable;
 }tCsrRoamStruct;
 
 

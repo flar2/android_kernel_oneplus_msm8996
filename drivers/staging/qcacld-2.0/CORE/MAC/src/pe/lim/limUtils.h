@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -354,6 +354,8 @@ void limDeleteDialogueTokenList(tpAniSirGlobal pMac);
 tSirRetStatus limSearchAndDeleteDialogueToken(tpAniSirGlobal pMac, tANI_U8 token, tANI_U16 assocId, tANI_U16 tid);
 void limRessetScanChannelInfo(tpAniSirGlobal pMac);
 void limAddScanChannelInfo(tpAniSirGlobal pMac, tANI_U8 channelId);
+void lim_add_channel_status_info(tpAniSirGlobal p_mac,
+	struct lim_channel_status *channel_stat, uint8_t channel_id);
 
 tANI_U8 limGetChannelFromBeacon(tpAniSirGlobal pMac, tpSchBeaconStruct pBeacon);
 tSirNwType limGetNwType(tpAniSirGlobal pMac, tANI_U8 channelNum, tANI_U32 type, tpSchBeaconStruct pBeacon);
@@ -411,8 +413,6 @@ tANI_BOOLEAN limCheckMembershipUserPosition( tpAniSirGlobal pMac, tpPESession ps
                                              tANI_U32 membership, tANI_U32 userPosition,
                                              tANI_U8 staId);
 #endif
-
-#ifdef FEATURE_WLAN_DIAG_SUPPORT
 
 typedef enum
 {
@@ -494,8 +494,14 @@ typedef enum
     WLAN_PE_DIAG_AUTH_TIMEOUT,
 } WLAN_PE_DIAG_EVENT_TYPE;
 
+#ifdef FEATURE_WLAN_DIAG_SUPPORT
 void limDiagEventReport(tpAniSirGlobal pMac, tANI_U16 eventType, tpPESession pSessionEntry, tANI_U16 status, tANI_U16 reasonCode);
-
+#else
+static inline void limDiagEventReport(tpAniSirGlobal pMac, tANI_U16 eventType,
+			tpPESession pSessionEntry, tANI_U16 status,
+			tANI_U16 reasonCode)
+{
+}
 #endif /* FEATURE_WLAN_DIAG_SUPPORT */
 
 void peSetResumeChannel(tpAniSirGlobal pMac, tANI_U16 channel, ePhyChanBondState cbState);
@@ -626,4 +632,23 @@ void lim_parse_beacon_for_tim(tpAniSirGlobal mac_ctx, uint8_t* rx_packet_info,
 eHalStatus limP2PActionCnf(tpAniSirGlobal mac_ctx,
 				uint32_t tx_complete_success);
 
+void lim_send_chan_switch_action_frame(tpAniSirGlobal mac_ctx,
+	uint16_t new_channel, uint8_t ch_bandwidth,
+	tpPESession session_entry);
+/**
+ * lim_check_if_vendor_oui_match() - Check if the given OUI match in IE buffer
+ * @mac_ctx: MAC context
+ * @ie: IE buffer
+ * @oui: OUI string
+ * @oui_len: length of @oui
+ * @ie_len: length of @ie
+ *
+ * This API is used to check if given vendor OUI
+ * matches in given IE buffer
+ *
+ * Return: True, if mataches. False otherwise
+ */
+bool lim_check_if_vendor_oui_match(tpAniSirGlobal mac_ctx,
+                uint8_t *oui, uint8_t oui_len,
+                uint8_t *ie, uint8_t ie_len);
 #endif /* __LIM_UTILS_H */

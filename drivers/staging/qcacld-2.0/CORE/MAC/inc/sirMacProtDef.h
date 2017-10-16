@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -41,8 +41,10 @@
 
 #include "palTypes.h"
 #include "sirTypes.h"
-#include "wniCfgSta.h"
-
+#include "wni_cfg.h"
+#ifdef WLAN_FEATURE_FILS_SK
+#include <lim_fils_defs.h>
+#endif
 
 ///Capability information related
 #define CAPABILITY_INFO_DELAYED_BA_BIT 14
@@ -164,6 +166,11 @@
 #define SIR_MAC_QOS_DEF_BA_RSP      5
 #define SIR_MAC_QOS_DEL_BA_REQ      6
 #define SIR_MAC_QOS_DEL_BA_RSP      7
+
+#define SIR_MAC_ACTION_MEASURE_REQUEST_ID      0
+#define SIR_MAC_ACTION_MEASURE_REPORT_ID       1
+#define SIR_MAC_ACTION_TPC_REQUEST_ID          2
+#define SIR_MAC_ACTION_TPC_REPORT_ID           3
 
 #define SIR_MAC_ACTION_CHANNEL_SWITCH_ID       4
 
@@ -408,11 +415,9 @@
 #define NSS_1x1_MODE 1
 #define NSS_2x2_MODE 2
 
-#ifdef FEATURE_AP_MCC_CH_AVOIDANCE
 #define SIR_MAC_QCOM_VENDOR_EID      200
 #define SIR_MAC_QCOM_VENDOR_OUI      "\x00\xA0\xC6"
 #define SIR_MAC_QCOM_VENDOR_SIZE     3
-#endif /* FEATURE_AP_MCC_CH_AVOIDANCE */
 
 /// Workaround IE to change beacon length when it is 4*n+1
 #define SIR_MAC_ANI_WORKAROUND_EID     255
@@ -457,6 +462,10 @@
 
 #define SIR_MAC_CISCO_OUI "\x00\x40\x96"
 #define SIR_MAC_CISCO_OUI_SIZE 3
+
+/* WFA vendor specific TPC OUI */
+#define SIR_MAC_WFA_TPC_OUI           "\x00\x50\xF2\x08\x00"
+#define SIR_MAC_WFA_TPC_OUI_SIZE      5
 
 // min size of wme oui header: oui(3) + type + subtype + version
 #define SIR_MAC_OUI_WME_HDR_MIN       6
@@ -586,8 +595,13 @@
 #define SIR_MAC_MAX_NUM_OF_DEFAULT_KEYS      4
 #define SIR_MAC_KEY_LENGTH                   13   // WEP Maximum key length size
 #define SIR_MAC_AUTH_CHALLENGE_LENGTH        253
+#define SIR_MAC_SAP_AUTH_CHALLENGE_LENGTH    128
 #define SIR_MAC_WEP_IV_LENGTH                4
 #define SIR_MAC_WEP_ICV_LENGTH               4
+#define SIR_MAC_CHALLENGE_ID_LEN             2
+
+/* 2 bytes each for auth algo number, transaction number and status code */
+#define SIR_MAC_AUTH_FRAME_INFO_LEN          6
 
 /// MAX key length when ULA is used
 #define SIR_MAC_MAX_KEY_LENGTH               32
@@ -1005,6 +1019,14 @@ typedef __ani_attr_pre_packed struct sSirMacRateSet
     tANI_U8  rate[SIR_MAC_RATESET_EID_MAX];
 } __ani_attr_packed tSirMacRateSet;
 
+/** struct merged_mac_rate_set - merged mac rate set
+ * @num_rates: num of rates
+ * @rate: rate list
+ */
+struct merged_mac_rate_set {
+	uint8_t num_rates;
+	uint8_t rate[2 * SIR_MAC_RATESET_EID_MAX];
+};
 
 typedef __ani_attr_pre_packed struct sSirMacSSid
 {
@@ -2039,6 +2061,14 @@ typedef __ani_attr_pre_packed struct sSirMacAuthFrameBody
     tANI_U8      type;   // = SIR_MAC_CHALLENGE_TEXT_EID
     tANI_U8      length; // = SIR_MAC_AUTH_CHALLENGE_LENGTH
     tANI_U8      challengeText[SIR_MAC_AUTH_CHALLENGE_LENGTH];
+#ifdef WLAN_FEATURE_FILS_SK
+    tSirMacRsnInfo rsn_ie;
+    uint8_t assoc_delay_info;
+    uint8_t session[SIR_FILS_SESSION_LENGTH];
+    uint8_t wrapped_data_len;
+    uint8_t wrapped_data[SIR_FILS_WRAPPED_DATA_MAX_SIZE];
+    uint8_t nonce[SIR_FILS_NONCE_LENGTH];
+#endif
 } __ani_attr_packed tSirMacAuthFrameBody, *tpSirMacAuthFrameBody;
 
 typedef __ani_attr_pre_packed struct sSirMacAuthenticationFrame

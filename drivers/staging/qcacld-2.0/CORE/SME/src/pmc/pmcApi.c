@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -2867,14 +2867,17 @@ eHalStatus pmcSetPreferredNetworkList
         return eHAL_STATUS_FAILURE;
     }
 
-    pRequestBuf = vos_mem_malloc(sizeof(tSirPNOScanReq));
+    pRequestBuf = vos_mem_malloc(sizeof(tSirPNOScanReq) +
+                  (pRequest->num_vendor_oui) *
+                  (sizeof(struct vendor_oui)));
     if (NULL == pRequestBuf)
     {
         VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR, "%s: Not able to allocate memory for PNO request", __func__);
         return eHAL_STATUS_FAILED_ALLOC;
     }
 
-    vos_mem_copy(pRequestBuf, pRequest, sizeof(tSirPNOScanReq));
+    vos_mem_copy(pRequestBuf, pRequest, sizeof(tSirPNOScanReq) +
+                 (pRequest->num_vendor_oui) * (sizeof(struct vendor_oui)));
 
     /*Must translate the mode first*/
     ucDot11Mode = (tANI_U8) csrTranslateToWNICfgDot11Mode(pMac,
@@ -3145,6 +3148,8 @@ eHalStatus pmcGetFilterMatchCount
 #endif // WLAN_FEATURE_PACKET_FILTERING
 
 #ifdef WLAN_FEATURE_GTK_OFFLOAD
+
+#define GTK_OFFLOAD_DISABLE 1
 /* ---------------------------------------------------------------------------
     \fn pmcSetGTKOffload
     \brief  Set GTK offload feature.
@@ -3184,6 +3189,11 @@ eHalStatus pmcSetGTKOffload (tHalHandle hHal, tpSirGtkOffloadParams pGtkOffload,
                  sizeof(tSirMacAddr));
 
     vos_mem_copy(pRequestBuf, pGtkOffload, sizeof(tSirGtkOffloadParams));
+
+#ifdef WLAN_FEATURE_FILS_SK
+    if (pSession->is_fils_connection)
+        pRequestBuf->ulFlags = GTK_OFFLOAD_DISABLE;
+#endif
 
     msg.type = WDA_GTK_OFFLOAD_REQ;
     msg.reserved = 0;

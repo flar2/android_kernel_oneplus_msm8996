@@ -50,9 +50,9 @@
 #include "limAssocUtils.h"
 #include "limFT.h"
 #ifdef WLAN_FEATURE_11W
-#include "wniCfgAp.h"
+#include "wni_cfg.h"
 #endif
-
+#include<crypto/aes.h>
 #ifdef WLAN_FEATURE_VOWIFI_11R
 #include "limFTDefs.h"
 #endif
@@ -64,9 +64,9 @@
 #if defined WLAN_FEATURE_VOWIFI
 #include "rrmApi.h"
 #endif
-
+#include "qdf_crypto.h"
 #include "wlan_qct_wda.h"
-
+#include "lim_process_fils.h"
 
 ////////////////////////////////////////////////////////////////////////
 /**
@@ -1392,6 +1392,9 @@ limSendAssocRspMgmtFrame(tpAniSirGlobal pMac,
     if (LIM_IS_AP_ROLE(psessionEntry)) {
         if(psessionEntry->gLimProtectionControl != WNI_CFG_FORCE_POLICY_PROTECTION_DISABLE)
         limDecideApProtection(pMac, peerMacAddr, &beaconParams,psessionEntry);
+
+        if (NULL != pSta && pSta->non_ecsa_capable)
+                psessionEntry->lim_non_ecsa_cap_num++;
     }
 
     limUpdateShortPreamble(pMac, peerMacAddr, &beaconParams, psessionEntry);
@@ -1410,6 +1413,10 @@ limSendAssocRspMgmtFrame(tpAniSirGlobal pMac,
         schSetFixedBeaconFields(pMac,psessionEntry);
         limSendBeaconParams(pMac, &beaconParams, psessionEntry );
     }
+
+    if (NULL != pSta && pSta->sub20_dynamic_channelwidth != 0)
+            populate_dot11f_sub_20_channel_width_ie(
+                pMac, &frm.QComVendorIE, psessionEntry);
 
     // Allocate a buffer for this frame:
     if ( pAssocReq != NULL )
@@ -2064,6 +2071,8 @@ limSendAssocReqMgmtFrame(tpAniSirGlobal   pMac,
     tANI_U8            *pIe = NULL;
     tANI_U32            ieLen = 0;
     tANI_U32            fixed_param_len = 0;
+    VOS_STATUS          vos_status;
+    tANI_U32            aes_block_size_len = 0;
 
     if(NULL == psessionEntry)
     {
@@ -2344,6 +2353,15 @@ limSendAssocReqMgmtFrame(tpAniSirGlobal   pMac,
         }
     }
 
+    populate_dot11f_sub_20_channel_width_ie(pMac,
+                                            &pFrm->QComVendorIE,
+                                            psessionEntry);
+
+    if (lim_is_fils_connection(psessionEntry)) {
+        populate_dot11f_fils_params(pMac, pFrm, psessionEntry);
+        aes_block_size_len = AES_BLOCK_SIZE;
+    }
+
     nStatus = dot11fGetPackedAssocRequestSize(pMac, pFrm, &nPayload);
     if (DOT11F_FAILED(nStatus))
     {
@@ -2360,7 +2378,8 @@ limSendAssocReqMgmtFrame(tpAniSirGlobal   pMac,
              nStatus);
     }
 
-    nBytes = nPayload + sizeof(tSirMacMgmtHdr) + nAddIELen;
+    nBytes = nPayload + sizeof(tSirMacMgmtHdr) 
+                      + nAddIELen + aes_block_size_len;
 
     halstatus = palPktAlloc( pMac->hHdd, HAL_TXRX_FRM_802_11_MGMT,
             ( tANI_U16 )nBytes, ( void** ) &pFrame,
@@ -2433,13 +2452,26 @@ limSendAssocReqMgmtFrame(tpAniSirGlobal   pMac,
         psessionEntry->assocReq = NULL;
         psessionEntry->assocReqLen = 0;
     }
-
     if( nAddIELen )
     {
         vos_mem_copy( pFrame + sizeof(tSirMacMgmtHdr) + nPayload,
                       pAddIE,
                       nAddIELen );
         nPayload += nAddIELen;
+    }
+
+    if (lim_is_fils_connection(psessionEntry)) {
+        vos_status = aead_encrypt_assoc_req(pMac, psessionEntry,
+                                            pFrame, &nPayload);
+        if (!VOS_IS_STATUS_SUCCESS(vos_status)) {
+            limDiagEventReport(pMac,
+                        WLAN_PE_DIAG_ASSOC_IND_EVENT,
+                        psessionEntry, eSIR_FAILURE, eSIR_FAILURE);
+            palPktFree( pMac->hHdd, HAL_TXRX_FRM_802_11_MGMT,
+                        ( void* ) pFrame, ( void* ) pPacket );
+            vos_mem_free(pFrm);
+            return;
+        }
     }
 
     psessionEntry->assocReq = vos_mem_malloc(nPayload);
@@ -2989,6 +3021,16 @@ void limSendRetryReassocReqFrame(tpAniSirGlobal     pMac,
 {
     tLimMlmReassocCnf       mlmReassocCnf; // keep sme
     tLimMlmReassocReq       *pTmpMlmReassocReq = NULL;
+#ifdef FEATURE_WLAN_ESE
+    tANI_U32                val=0;
+#endif
+    if (pMlmReassocReq == NULL)
+    {
+	    limLog(pMac, LOGE,
+			    FL("Invalid pMlmReassocReq"));
+	    goto end;
+    }
+
     if(NULL == pTmpMlmReassocReq)
     {
         pTmpMlmReassocReq = vos_mem_malloc(sizeof(tLimMlmReassocReq));
@@ -2999,6 +3041,31 @@ void limSendRetryReassocReqFrame(tpAniSirGlobal     pMac,
 
     // Prepare and send Reassociation request frame
     // start reassoc timer.
+#ifdef FEATURE_WLAN_ESE
+    /*
+     * In case of Ese Reassociation, change the reassoc timer
+     * value.
+     */
+    val = pMlmReassocReq->reassocFailureTimeout;
+    if (psessionEntry->isESEconnection)
+    {
+        val = val/LIM_MAX_REASSOC_RETRY_LIMIT;
+    }
+    if (tx_timer_deactivate(&pMac->lim.limTimers.gLimReassocFailureTimer) !=
+                            TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+               FL("unable to deactivate Reassoc failure timer"));
+    }
+    val = SYS_MS_TO_TICKS(val);
+    if (tx_timer_change(&pMac->lim.limTimers.gLimReassocFailureTimer,
+                       val, 0) != TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+               FL("unable to change Reassociation failure timer"));
+    }
+#endif
+
     pMac->lim.limTimers.gLimReassocFailureTimer.sessionId = psessionEntry->peSessionId;
     // Start reassociation failure timer
     MTRACE(vos_trace(VOS_MODULE_ID_PE, TRACE_CODE_TIMER_ACTIVATE,
@@ -3409,7 +3476,7 @@ void
 limSendAuthMgmtFrame(tpAniSirGlobal pMac,
                      tpSirMacAuthFrameBody pAuthFrameBody,
                      tSirMacAddr           peerMacAddr,
-                     tANI_U8               wepBit,
+                     tANI_U8               wep_challenge_len,
                      tpPESession           psessionEntry,
                      tAniBool              waitForAck)
 {
@@ -3436,7 +3503,7 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
            pAuthFrameBody->authStatusCode,
            (pAuthFrameBody->authStatusCode == eSIR_MAC_SUCCESS_STATUS),
             MAC_ADDR_ARRAY(peerMacAddr));
-    if (wepBit == LIM_WEP_IN_FC)
+    if (wep_challenge_len)
     {
         /// Auth frame3 to be sent with encrypted framebody
         /**
@@ -3447,9 +3514,9 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
          * IV & ICV.
          */
 
-        frameLen = sizeof(tSirMacMgmtHdr) + LIM_ENCR_AUTH_BODY_LEN;
+        bodyLen = wep_challenge_len + LIM_ENCR_AUTH_INFO_LEN;
+        frameLen = sizeof(tSirMacMgmtHdr) + bodyLen;
 
-        bodyLen = LIM_ENCR_AUTH_BODY_LEN;
     } // if (wepBit == LIM_WEP_IN_FC)
     else
     {
@@ -3466,6 +3533,8 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
                 frameLen = sizeof(tSirMacMgmtHdr) +
                            SIR_MAC_AUTH_CHALLENGE_OFFSET;
                 bodyLen  = SIR_MAC_AUTH_CHALLENGE_OFFSET;
+                frameLen += lim_create_fils_auth_data(pMac,
+                                                pAuthFrameBody, psessionEntry);
 
 #if defined WLAN_FEATURE_VOWIFI_11R
             if (pAuthFrameBody->authAlgoNumber == eSIR_FT_AUTH)
@@ -3516,10 +3585,11 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
                      * transaction number, status code and 128 bytes
                      * for challenge text.
                      */
-
+                    bodyLen = SIR_MAC_AUTH_FRAME_INFO_LEN +
+                              SIR_MAC_SAP_AUTH_CHALLENGE_LENGTH +
+                              SIR_MAC_CHALLENGE_ID_LEN;
                     frameLen = sizeof(tSirMacMgmtHdr) +
-                               sizeof(tSirMacAuthFrame);
-                    bodyLen  = sizeof(tSirMacAuthFrameBody);
+                               bodyLen;
                 }
 
                 break;
@@ -3580,7 +3650,10 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
     }
 
     pMacHdr = ( tpSirMacMgmtHdr ) pFrame;
-    pMacHdr->fc.wep = wepBit;
+    if (wep_challenge_len)
+        pMacHdr->fc.wep = LIM_WEP_IN_FC;
+    else
+        pMacHdr->fc.wep = LIM_NO_WEP_IN_FC;
 
     // Prepare BSSId
     if (LIM_IS_AP_ROLE(psessionEntry) ||
@@ -3593,7 +3666,7 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
     /// Prepare Authentication frame body
     pBody    = pFrame + sizeof(tSirMacMgmtHdr);
 
-    if (wepBit == LIM_WEP_IN_FC)
+    if (wep_challenge_len)
     {
        vos_mem_copy(pBody, (tANI_U8 *) pAuthFrameBody, bodyLen);
 
@@ -3669,6 +3742,13 @@ limSendAuthMgmtFrame(tpAniSirGlobal pMac,
              }
           }
        }
+#ifdef WLAN_FEATURE_FILS_SK
+       else if (pAuthFrameBody->authAlgoNumber ==
+                      eSIR_FILS_SK_WITHOUT_PFS) {
+               limLog(pMac, LOG1,FL("appending fils Auth data"));
+               lim_add_fils_data_to_auth_frame(psessionEntry, pBody);
+       }
+#endif
 #endif
 
        PELOG1(limLog(pMac, LOG1,
@@ -3786,7 +3866,7 @@ eHalStatus limSendDeauthCnf(tpAniSirGlobal pMac)
 #endif
                  (psessionEntry->is11Rconnection ))) {
             PELOGE(limLog(pMac, LOGE,
-                   FL("FT Preauth Session (%p,%d) Cleanup"
+                   FL("FT Preauth Session (%pK,%d) Cleanup"
                       " Deauth reason %d Trigger = %d"),
                    psessionEntry, psessionEntry->peSessionId,
                    pMlmDeauthReq->reasonCode,
@@ -3886,7 +3966,7 @@ eHalStatus limSendDisassocCnf(tpAniSirGlobal pMac)
                  eSIR_MAC_DISASSOC_DUE_TO_FTHANDOFF_REASON))
         {
             PELOGE(limLog(pMac, LOG1,
-                   FL("FT Preauth Session (%p,%d) Clean up"
+                   FL("FT Preauth Session (%pK,%d) Clean up"
 
 #ifdef FEATURE_WLAN_ESE
                    " isESE %d"
@@ -4956,9 +5036,6 @@ limSendVHTChannelSwitchMgmtFrame(tpAniSirGlobal pMac,
     return eSIR_SUCCESS;
 
 } // End limSendVHTChannelSwitchMgmtFrame.
-
-
-
 #endif
 
 #if defined WLAN_FEATURE_VOWIFI

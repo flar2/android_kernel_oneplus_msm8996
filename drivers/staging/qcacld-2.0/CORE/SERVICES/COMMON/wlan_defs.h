@@ -60,6 +60,16 @@
 #define SUPPORT_11AX 0 /* 11ax not supported by default */
 #endif
 
+/* defines to set Packet extension values which can be 0 us, 8 us or 16 us */
+/* NOTE: Below values cannot be changed without breaking WMI Compatibility */
+#define MAX_HE_NSS               8
+#define MAX_HE_MODULATION        8
+#define MAX_HE_RU                4
+#define HE_MODULATION_NONE       7
+#define HE_PET_0_USEC            0
+#define HE_PET_8_USEC            1
+#define HE_PET_16_USEC           2
+
 typedef enum {
     MODE_11A        = 0,   /* 11a Mode */
     MODE_11G        = 1,   /* 11b/g Mode */
@@ -132,6 +142,10 @@ typedef enum {
     WLAN_11G_CAPABILITY   = 2,
     WLAN_11AG_CAPABILITY  = 3,
 }WLAN_CAPABILITY;
+
+#define SUB20_MODE_NONE (0x00)
+#define SUB20_MODE_5MHZ (0x01)
+#define SUB20_MODE_10MHZ (0x02)
 
 #if defined(CONFIG_AR900B_SUPPORT) || defined(AR900B)
 #define A_RATEMASK A_UINT64

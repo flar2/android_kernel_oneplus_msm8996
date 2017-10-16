@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2014-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011, 2014-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -389,9 +389,17 @@ htt_attach_target(htt_pdev_handle pdev)
     return status;
 }
 
+void htt_htc_detach(struct htt_pdev_t *pdev)
+{
+    htc_disconnect_service(pdev->htc_endpoint);
+    return;
+}
+
+
 void
 htt_detach(htt_pdev_handle pdev)
 {
+    htt_htc_detach(pdev);
     htt_rx_detach(pdev);
     htt_tx_detach(pdev);
     htt_htc_pkt_pool_free(pdev);
@@ -453,7 +461,8 @@ htt_htc_attach(struct htt_pdev_t *pdev)
      * TODO:Conditional disabling will be removed once firmware
      * with reduced tx completion is pushed into release builds.
      */
-    if (!pdev->cfg.default_tx_comp_req) {
+    if ((!pdev->cfg.default_tx_comp_req) ||
+            ol_cfg_is_ptp_enabled(pdev->ctrl_pdev)) {
        connect.ConnectionFlags |= HTC_CONNECT_FLAGS_DISABLE_CREDIT_FLOW_CTRL;
     }
 #else
@@ -527,12 +536,12 @@ htt_display(htt_pdev_handle pdev, int indent)
         indent+4, " ",
         pdev->rx_ring.size,
         pdev->rx_ring.fill_level);
-    adf_os_print("%*sat %p (%#x paddr)\n", indent+8, " ",
+    adf_os_print("%*sat %pK (%#x paddr)\n", indent+8, " ",
         pdev->rx_ring.buf.paddrs_ring,
         pdev->rx_ring.base_paddr);
-    adf_os_print("%*snetbuf ring @ %p\n", indent+8, " ",
+    adf_os_print("%*snetbuf ring @ %pK\n", indent+8, " ",
         pdev->rx_ring.buf.netbufs_ring);
-    adf_os_print("%*sFW_IDX shadow register: vaddr = %p, paddr = %#x\n",
+    adf_os_print("%*sFW_IDX shadow register: vaddr = %pK, paddr = %#x\n",
         indent+8, " ",
         pdev->rx_ring.alloc_idx.vaddr,
         pdev->rx_ring.alloc_idx.paddr);

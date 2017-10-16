@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -40,8 +40,7 @@
 #include "wniApi.h"
 #include "sirCommon.h"
 #include "aniGlobal.h"
-
-#include "wniCfgSta.h"
+#include "wni_cfg.h"
 #include "sysDef.h"
 #include "cfgApi.h"
 
@@ -58,6 +57,7 @@
 #include "nan_datapath.h"
 
 #include "sirApi.h"
+#include "lim_process_fils.h"
 
 /**
  * limRemoveSsidFromScanCache()
@@ -332,6 +332,42 @@ static void limSendSmeJoinReassocRspAfterResume( tpAniSirGlobal pMac,
     limSysProcessMmhMsgApi(pMac, &mmhMsg,  ePROT);
 }
 
+/**
+ * lim_add_bss_info() - copy data from session entry to join rsp
+ * @session entry: PE Session Info
+ * @sme_join_rsp: Join response buffer to be filled up
+ *
+ * Return: None
+ */
+static void lim_add_bss_info(tpPESession session_entry,
+					tpSirSmeJoinRsp sme_join_rsp)
+{
+	if (session_entry->hs20vendor_ie.present)
+		sme_join_rsp->hs20vendor_ie = session_entry->hs20vendor_ie;
+	if (session_entry->vht_caps.present)
+		sme_join_rsp->vht_caps = session_entry->vht_caps;
+	if (session_entry->ht_caps.present)
+		sme_join_rsp->ht_caps = session_entry->ht_caps;
+	if (session_entry->ht_operation.present)
+		sme_join_rsp->ht_operation = session_entry->ht_operation;
+	if (session_entry->vht_operation.present)
+		sme_join_rsp->vht_operation = session_entry->vht_operation;
+}
+
+#ifdef WLAN_FEATURE_FILS_SK
+static void lim_update_fils_seq_num(tpSirSmeJoinRsp sme_join_rsp,
+                    tpPESession session_entry)
+{
+    sme_join_rsp->fils_seq_num =
+        session_entry->fils_info->sequence_number;
+    PELOG1(limLog(pMac, LOG1, FL("FILS seq number %d"),
+            sme_join_rsp->fils_seq_num);)
+}
+#else
+static inline void lim_update_fils_seq_num(tpSirSmeJoinRsp sme_join_rsp,
+                       tpPESession session_entry)
+{}
+#endif
 
 /**
  * limSendSmeJoinReassocRsp()
@@ -423,7 +459,14 @@ limSendSmeJoinReassocRsp(tpAniSirGlobal pMac, tANI_U16 msgType,
         }
 
         vos_mem_set((tANI_U8*)pSirSmeJoinRsp, rspLen, 0);
-
+#ifdef WLAN_FEATURE_FILS_SK
+        if (lim_is_fils_connection(psessionEntry))
+        {
+            pSirSmeJoinRsp->is_fils_connection = true;
+            lim_update_fils_seq_num(pSirSmeJoinRsp,
+                                        psessionEntry);
+        }
+#endif
         if (resultCode == eSIR_SME_SUCCESS)
         {
             pStaDs = dphGetHashEntry(pMac, DPH_STA_HASH_INDEX_PEER, &psessionEntry->dph.dphHashTable);
@@ -447,6 +490,10 @@ limSendSmeJoinReassocRsp(tpAniSirGlobal pMac, tANI_U16 msgType,
                 pSirSmeJoinRsp->nss = pStaDs->nss;
                 pSirSmeJoinRsp->max_rate_flags =
                                 lim_get_max_rate_flags(pMac, pStaDs);
+                lim_add_bss_info(psessionEntry, pSirSmeJoinRsp);
+                /* Copy FILS params only for Successful join */
+                populate_fils_connect_params(pMac, psessionEntry,
+                                             pSirSmeJoinRsp);
             }
         }
 
@@ -555,28 +602,26 @@ limSendSmeJoinReassocRsp(tpAniSirGlobal pMac, tANI_U16 msgType,
             }
 
 #ifdef FEATURE_WLAN_MCC_TO_SCC_SWITCH
-            if (psessionEntry->cc_switch_mode != VOS_MCC_TO_SCC_SWITCH_DISABLE) {
-                pSirSmeJoinRsp->HTProfile.htSupportedChannelWidthSet =
-                                      psessionEntry->htSupportedChannelWidthSet;
-                pSirSmeJoinRsp->HTProfile.htRecommendedTxWidthSet =
-                                      psessionEntry->htRecommendedTxWidthSet;
-                pSirSmeJoinRsp->HTProfile.htSecondaryChannelOffset =
-                                      psessionEntry->htSecondaryChannelOffset;
-                pSirSmeJoinRsp->HTProfile.dot11mode =
-                                      psessionEntry->dot11mode;
-                pSirSmeJoinRsp->HTProfile.htCapability =
-                                      psessionEntry->htCapability;
+            pSirSmeJoinRsp->HTProfile.htSupportedChannelWidthSet =
+                                  psessionEntry->htSupportedChannelWidthSet;
+            pSirSmeJoinRsp->HTProfile.htRecommendedTxWidthSet =
+                                  psessionEntry->htRecommendedTxWidthSet;
+            pSirSmeJoinRsp->HTProfile.htSecondaryChannelOffset =
+                                  psessionEntry->htSecondaryChannelOffset;
+            pSirSmeJoinRsp->HTProfile.dot11mode =
+                                  psessionEntry->dot11mode;
+            pSirSmeJoinRsp->HTProfile.htCapability =
+                                  psessionEntry->htCapability;
 #ifdef WLAN_FEATURE_11AC
-                pSirSmeJoinRsp->HTProfile.vhtCapability =
-                                      psessionEntry->vhtCapability;
-                pSirSmeJoinRsp->HTProfile.vhtTxChannelWidthSet =
-                                      psessionEntry->vhtTxChannelWidthSet;
-                pSirSmeJoinRsp->HTProfile.apCenterChan =
-                                      psessionEntry->apCenterChan;
-                pSirSmeJoinRsp->HTProfile.apChanWidth =
-                                      psessionEntry->apChanWidth;
+            pSirSmeJoinRsp->HTProfile.vhtCapability =
+                                  psessionEntry->vhtCapability;
+            pSirSmeJoinRsp->HTProfile.vhtTxChannelWidthSet =
+                                  psessionEntry->vhtTxChannelWidthSet;
+            pSirSmeJoinRsp->HTProfile.apCenterChan =
+                                  psessionEntry->apCenterChan;
+            pSirSmeJoinRsp->HTProfile.apChanWidth =
+                                  psessionEntry->apChanWidth;
 #endif
-            }
 #endif
         }
         else
@@ -792,29 +837,26 @@ limSendSmeStartBssRsp(tpAniSirGlobal pMac,
                       size += ieLen - sizeof(tANI_U32);
                 }
 #ifdef FEATURE_WLAN_MCC_TO_SCC_SWITCH
-                if (psessionEntry->cc_switch_mode
-                                             != VOS_MCC_TO_SCC_SWITCH_DISABLE) {
-                    pSirSmeRsp->HTProfile.htSupportedChannelWidthSet =
-                                      psessionEntry->htSupportedChannelWidthSet;
-                    pSirSmeRsp->HTProfile.htRecommendedTxWidthSet =
-                                      psessionEntry->htRecommendedTxWidthSet;
-                    pSirSmeRsp->HTProfile.htSecondaryChannelOffset =
-                                      psessionEntry->htSecondaryChannelOffset;
-                    pSirSmeRsp->HTProfile.dot11mode =
-                                      psessionEntry->dot11mode;
-                    pSirSmeRsp->HTProfile.htCapability =
-                                      psessionEntry->htCapability;
+                pSirSmeRsp->HTProfile.htSupportedChannelWidthSet =
+                                  psessionEntry->htSupportedChannelWidthSet;
+                pSirSmeRsp->HTProfile.htRecommendedTxWidthSet =
+                                  psessionEntry->htRecommendedTxWidthSet;
+                pSirSmeRsp->HTProfile.htSecondaryChannelOffset =
+                                  psessionEntry->htSecondaryChannelOffset;
+                pSirSmeRsp->HTProfile.dot11mode =
+                                  psessionEntry->dot11mode;
+                pSirSmeRsp->HTProfile.htCapability =
+                                  psessionEntry->htCapability;
 #ifdef WLAN_FEATURE_11AC
-                    pSirSmeRsp->HTProfile.vhtCapability =
-                                      psessionEntry->vhtCapability;
-                    pSirSmeRsp->HTProfile.vhtTxChannelWidthSet =
-                                      psessionEntry->vhtTxChannelWidthSet;
-                    pSirSmeRsp->HTProfile.apCenterChan =
-                                      psessionEntry->apCenterChan;
-                    pSirSmeRsp->HTProfile.apChanWidth =
-                                      psessionEntry->apChanWidth;
+                pSirSmeRsp->HTProfile.vhtCapability =
+                                  psessionEntry->vhtCapability;
+                pSirSmeRsp->HTProfile.vhtTxChannelWidthSet =
+                                  psessionEntry->vhtTxChannelWidthSet;
+                pSirSmeRsp->HTProfile.apCenterChan =
+                                  psessionEntry->apCenterChan;
+                pSirSmeRsp->HTProfile.apChanWidth =
+                                  psessionEntry->apChanWidth;
 #endif
-                }
 #endif
         }
     }
@@ -1704,7 +1746,7 @@ limSendSmeDisassocInd(tpAniSirGlobal pMac, tpDphHashNode pStaDs,tpPESession pses
 
     pSirSmeDisassocInd->sessionId     =  psessionEntry->smeSessionId;
     pSirSmeDisassocInd->transactionId =  psessionEntry->transactionId;
-    pSirSmeDisassocInd->statusCode    =  pStaDs->mlmStaContext.disassocReason;
+    pSirSmeDisassocInd->statusCode    =  eSIR_SME_DEAUTH_STATUS;
     pSirSmeDisassocInd->reasonCode    =  pStaDs->mlmStaContext.disassocReason;
 
     vos_mem_copy( pSirSmeDisassocInd->bssId, psessionEntry->bssId, sizeof(tSirMacAddr));
@@ -3044,7 +3086,7 @@ void limHandleCSAoffloadMsg(tpAniSirGlobal pMac,tpSirMsgQ MsgQ)
 
       } else
 #endif
-      if (psessionEntry->htCapability) {
+      if (psessionEntry->htSupportedChannelWidthSet) {
           psessionEntry->gLimChannelSwitch.secondarySubBand =
                                              limSelectCBMode(pStaDs,
                                                  psessionEntry,
@@ -3057,6 +3099,9 @@ void limHandleCSAoffloadMsg(tpAniSirGlobal pMac,tpSirMsgQ MsgQ)
       }
       limLog(pMac, LOG1, FL("secondarySubBand = %d"),
              psessionEntry->gLimChannelSwitch.secondarySubBand);
+
+      psessionEntry->lim_sub20_channel_switch_bandwidth =
+                         csa_params->new_sub20_channelwidth;
 
       limPrepareFor11hChannelSwitch(pMac, psessionEntry);
       pCsaOffloadInd = vos_mem_malloc(sizeof(tSmeCsaOffloadInd));
@@ -3459,6 +3504,15 @@ limProcessBeaconTxSuccessInd(tpAniSirGlobal pMac, tANI_U16 msgType, void *event)
           * Send the next beacon with updated CSA IE count
           */
           limSendDfsChanSwIEUpdate(pMac, psessionEntry);
+
+          if (pMac->sap.SapDfsInfo.dfs_beacon_tx_enhanced) {
+              /* Send Action frame after updating the beacon */
+              lim_send_chan_switch_action_frame(pMac,
+                  psessionEntry->gLimChannelSwitch.primaryChannel,
+                  psessionEntry->gLimChannelSwitch.secondarySubBand,
+                  psessionEntry);
+          }
+
           /* Decrement the IE count */
           psessionEntry->gLimChannelSwitch.switchCount--;
       }

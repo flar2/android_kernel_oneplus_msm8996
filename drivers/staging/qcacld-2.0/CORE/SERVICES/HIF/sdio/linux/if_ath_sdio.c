@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -117,7 +117,7 @@ static inline void *hif_get_virt_ramdump_mem(unsigned long *size)
 	size_t length = 0;
 	int flags = GFP_KERNEL;
 
-	length = DRAM_SIZE + IRAM_SIZE + AXI_SIZE;
+	length = DRAM_SIZE + IRAM_SIZE + AXI_SIZE + REG_SIZE;
 
 	if (size != NULL)
 		*size = (unsigned long)length;
@@ -234,7 +234,7 @@ ath_hif_sdio_probe(void *context, void *hif_handle)
             __func__);
     } else {
         VOS_TRACE(VOS_MODULE_ID_HIF, VOS_TRACE_LEVEL_INFO,
-            "%s: ramdump base 0x%p size %d\n",
+            "%s: ramdump base 0x%pK size %d\n",
             __func__, ol_sc->ramdump_base, (int)ol_sc->ramdump_size);
     }
     init_waitqueue_head(&ol_sc->sc_osdev->event_queue);
@@ -265,6 +265,8 @@ ath_hif_sdio_probe(void *context, void *hif_handle)
 
 err_attach2:
     athdiag_procfs_remove();
+    if (sc->ol_sc->ramdump_base)
+        hif_release_ramdump_mem(sc->ol_sc->ramdump_base);
     hif_deinit_adf_ctx(ol_sc);
 err_attach1:
     A_FREE(ol_sc);

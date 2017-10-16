@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -26,6 +26,7 @@
  */
 
 #include <linux/firmware.h>
+#include <linux/pm_qos.h>
 #include "ol_if_athvar.h"
 #include "ol_fw.h"
 #include "targaddrs.h"
@@ -150,6 +151,60 @@ static int ol_get_fw_files_for_target(struct ol_fw_files *pfw_files,
 }
 #endif
 
+#ifdef CONFIG_NON_QC_PLATFORM_PCI
+static struct non_qc_platform_pci_fw_files FW_FILES_QCA6174_FW_1_1 = {
+"qwlan11.bin", "bdwlan11.bin", "otp11.bin", "utf11.bin",
+"utfbd11.bin", "epping11.bin", "evicted11.bin"};
+static struct non_qc_platform_pci_fw_files FW_FILES_QCA6174_FW_2_0 = {
+"qwlan20.bin", "bdwlan20.bin", "otp20.bin", "utf20.bin",
+"utfbd20.bin", "epping20.bin", "evicted20.bin"};
+static struct non_qc_platform_pci_fw_files FW_FILES_QCA6174_FW_1_3 = {
+"qwlan13.bin", "bdwlan13.bin", "otp13.bin", "utf13.bin",
+"utfbd13.bin", "epping13.bin", "evicted13.bin"};
+static struct non_qc_platform_pci_fw_files FW_FILES_QCA6174_FW_3_0 = {
+"qwlan30.bin", "bdwlan30.bin", "otp30.bin", "utf30.bin",
+"utfbd30.bin", "epping30.bin", "evicted30.bin"};
+static struct non_qc_platform_pci_fw_files FW_FILES_DEFAULT = {
+"qwlan.bin", "bdwlan.bin", "otp.bin", "utf.bin",
+"utfbd.bin", "epping.bin", "evicted.bin"};
+
+static
+int get_fw_files_for_non_qc_pci_target(struct non_qc_platform_pci_fw_files *pfw_files,
+                           u32 target_type, u32 target_version)
+{
+	if (!pfw_files)
+		return -ENODEV;
+
+	switch (target_version) {
+		case AR6320_REV1_VERSION:
+		case AR6320_REV1_1_VERSION:
+			memcpy(pfw_files, &FW_FILES_QCA6174_FW_1_1,
+						sizeof(*pfw_files));
+		break;
+		case AR6320_REV1_3_VERSION:
+			memcpy(pfw_files, &FW_FILES_QCA6174_FW_1_3,
+						sizeof(*pfw_files));
+			break;
+		case AR6320_REV2_1_VERSION:
+			memcpy(pfw_files, &FW_FILES_QCA6174_FW_2_0,
+						sizeof(*pfw_files));
+			break;
+		case AR6320_REV3_VERSION:
+		case AR6320_REV3_2_VERSION:
+		case QCA9379_REV1_VERSION:
+			memcpy(pfw_files, &FW_FILES_QCA6174_FW_3_0,
+						sizeof(*pfw_files));
+			break;
+		default:
+			memcpy(pfw_files, &FW_FILES_DEFAULT,
+						sizeof(*pfw_files));
+			printk("%s version mismatch 0x%X 0x%X",
+				__func__, target_type, target_version);
+			break;
+	}
+	return 0;
+}
+#endif
 #ifdef HIF_USB
 static A_STATUS ol_usb_extra_initialization(struct ol_softc *scn);
 #endif
@@ -504,7 +559,12 @@ out:
 #else
 static char *ol_board_id_to_filename(struct ol_softc *scn, uint16_t board_id)
 {
+#ifdef CONFIG_NON_QC_PLATFORM_PCI
+	return kstrdup(scn->fw_files.board_data, GFP_KERNEL);
+#else
+
 	return kstrdup(QCA_BOARD_DATA_FILE, GFP_KERNEL);
+#endif
 }
 #endif
 
@@ -586,7 +646,8 @@ static int __ol_transfer_bin_file(struct ol_softc *scn, ATH_BIN_FILE file,
 		printk("%s: Unknown file type\n", __func__);
 		return -1;
 	case ATH_OTP_FILE:
-#if defined(CONFIG_CNSS) || defined(HIF_SDIO)
+#if defined(CONFIG_CNSS) || defined(HIF_SDIO) || \
+defined(CONFIG_NON_QC_PLATFORM_PCI)
 		filename = scn->fw_files.otp_data;
 #else
 		filename = QCA_OTP_FILE;
@@ -680,9 +741,10 @@ static int __ol_transfer_bin_file(struct ol_softc *scn, ATH_BIN_FILE file,
 		break;
 	}
 
-	if (request_firmware(&fw_entry, filename, scn->sc_osdev->device) != 0)
+       status = request_firmware(&fw_entry, filename, scn->sc_osdev->device);
+	if (status)
 	{
-		pr_err("%s: Failed to get %s\n", __func__, filename);
+		pr_err("%s: Failed to get %s:%d\n", __func__, filename, status);
 
 		if (file == ATH_OTP_FILE)
 			return -ENOENT;
@@ -700,10 +762,11 @@ static int __ol_transfer_bin_file(struct ol_softc *scn, ATH_BIN_FILE file,
 			pr_info("%s: Trying to load default %s\n",
 							__func__, filename);
 
-			if (request_firmware(&fw_entry, filename,
-					scn->sc_osdev->device) != 0) {
-				pr_err("%s: Failed to get %s\n",
-							__func__, filename);
+			status = request_firmware(&fw_entry, filename,
+					scn->sc_osdev->device);
+			if (status) {
+				pr_err("%s: Failed to get %s:%d\n",
+						__func__, filename, status);
 				kfree(bd_id_filename);
 				return -1;
 			}
@@ -717,9 +780,8 @@ static int __ol_transfer_bin_file(struct ol_softc *scn, ATH_BIN_FILE file,
 
 	if (!fw_entry || !fw_entry->data) {
 		pr_err("%s: Invalid fw_entries\n", __func__);
-		if (bd_id_filename)
-			kfree(bd_id_filename);
-		return A_ERROR;
+		status = A_NO_MEMORY;
+		goto release_fw;
 	}
 
 	fw_entry_size = fw_entry->size;
@@ -756,16 +818,17 @@ static int __ol_transfer_bin_file(struct ol_softc *scn, ATH_BIN_FILE file,
 		}
 
 		switch (scn->target_type) {
-		default:
-			board_data_size = 0;
-			board_ext_data_size = 0;
-			break;
 		case TARGET_TYPE_AR6004:
 			board_data_size =  AR6004_BOARD_DATA_SZ;
 			board_ext_data_size = AR6004_BOARD_EXT_DATA_SZ;
+			break;
 		case TARGET_TYPE_AR9888:
 			board_data_size =  AR9888_BOARD_DATA_SZ;
 			board_ext_data_size = AR9888_BOARD_EXT_DATA_SZ;
+			break;
+		default:
+			board_data_size = 0;
+			board_ext_data_size = 0;
 			break;
 		}
 
@@ -908,7 +971,8 @@ end:
 		(filename!=NULL)?filename:"", fw_entry_size);
 
 release_fw:
-	release_firmware(fw_entry);
+	if (fw_entry)
+		release_firmware(fw_entry);
 
 	if (bd_id_filename)
 		kfree(bd_id_filename);
@@ -986,7 +1050,8 @@ int dump_CE_register(struct ol_softc *scn)
 }
 #endif
 
-#if (defined(CONFIG_CNSS) && !defined(HIF_USB)) || defined(HIF_SDIO)
+#if (defined(CONFIG_CNSS) && !defined(HIF_USB)) || defined(HIF_SDIO) || \
+defined(CONFIG_NON_QC_PLATFORM_PCI)
 static struct ol_softc *ramdump_scn;
 #ifdef TARGET_DUMP_FOR_NON_QC_PLATFORM
 void *ol_fw_dram_addr=NULL;
@@ -997,6 +1062,30 @@ u_int32_t ol_fw_iram_size;
 u_int32_t ol_fw_axi_size;
 #endif
 
+#if defined(HIF_SDIO)
+int ol_copy_ramdump(struct ol_softc *scn)
+{
+	int ret;
+
+	if (!vos_is_ssr_fw_dump_required())
+		return 0;
+
+	if (!scn->ramdump_base || !scn->ramdump_size) {
+		pr_info("%s: No RAM dump will be collected since ramdump_base "
+			"is NULL or ramdump_size is 0!\n", __func__);
+		ret = -EACCES;
+		goto out;
+	}
+
+	vos_request_pm_qos_type(PM_QOS_CPU_DMA_LATENCY,
+				DISABLE_KRAIT_IDLE_PS_VAL);
+	ret = ol_target_coredump(scn, scn->ramdump_base, scn->ramdump_size);
+	vos_remove_pm_qos();
+
+out:
+	return ret;
+}
+#else
 int ol_copy_ramdump(struct ol_softc *scn)
 {
 	int ret;
@@ -1016,6 +1105,7 @@ int ol_copy_ramdump(struct ol_softc *scn)
 out:
 	return ret;
 }
+#endif
 
 static void ramdump_work_handler(struct work_struct *ramdump)
 {
@@ -1029,9 +1119,10 @@ static void ramdump_work_handler(struct work_struct *ramdump)
 	u_int32_t host_interest_address;
 	u_int32_t dram_dump_values[4];
 #ifdef TARGET_DUMP_FOR_NON_QC_PLATFORM
+#ifndef CONFIG_NON_QC_PLATFORM_PCI
 	u_int8_t *byte_ptr;
 #endif
-
+#endif
 	if (!ramdump_scn) {
 		printk("No RAM dump will be collected since ramdump_scn is NULL!\n");
 		goto out_fail;
@@ -1094,6 +1185,7 @@ static void ramdump_work_handler(struct work_struct *ramdump)
 		goto out_fail;
 	}
 
+#ifndef CONFIG_NON_QC_PLATFORM_PCI
 	ol_fw_dram_size = DRAM_SIZE;
 	ol_fw_iram_size = IRAM_SIZE;
 	ol_fw_axi_size = AXI_SIZE;
@@ -1102,12 +1194,13 @@ static void ramdump_work_handler(struct work_struct *ramdump)
 	ol_fw_axi_addr = (void *)(byte_ptr + DRAM_SIZE);
 	ol_fw_iram_addr = (void *)(byte_ptr + DRAM_SIZE + AXI_SIZE);
 
-	pr_err("%s: DRAM => mem = %#08x, len = %d\n", __func__,
-			(u_int32_t)ol_fw_dram_addr, DRAM_SIZE);
-	pr_err("%s: AXI  => mem = %#08x, len = %d\n", __func__,
-			(u_int32_t)ol_fw_axi_addr, AXI_SIZE);
-	pr_err("%s: IRAM => mem = %#08x, len = %d\n", __func__,
-			(u_int32_t)ol_fw_iram_addr, IRAM_SIZE);
+	pr_err("%s: DRAM => mem = %pK, len = %d\n", __func__,
+				ol_fw_dram_addr, DRAM_SIZE);
+	pr_err("%s: AXI  => mem = %pK, len = %d\n", __func__,
+				ol_fw_axi_addr, AXI_SIZE);
+	pr_err("%s: IRAM => mem = %pK, len = %d\n", __func__,
+				ol_fw_iram_addr, IRAM_SIZE);
+#endif
 #endif
 
 	if (ol_copy_ramdump(ramdump_scn))
@@ -1239,7 +1332,7 @@ void ol_ramdump_handler(struct ol_softc *scn)
 				false);
 		scn->fw_ram_dumping = 0;
 
-		if (scn->enableFwSelfRecovery)
+		if (scn->enableFwSelfRecovery || scn->enableRamdumpCollection)
 			vos_set_logp_in_progress(VOS_MODULE_ID_VOSS, TRUE);
 	}
 	else if (pattern == FW_REG_PATTERN) {
@@ -1287,7 +1380,7 @@ void ol_ramdump_handler(struct ol_softc *scn)
 			fw_ram_seg_addr[i] = (scn->ramdump[i])->mem;
 			pr_err("FW %s start addr = %#08x\n",
 				fw_ram_seg_name[i], *reg);
-			pr_err("Memory addr for %s = %p\n",
+			pr_err("Memory addr for %s = %pK\n",
 				fw_ram_seg_name[i],
 				(scn->ramdump[i])->mem);
 			(scn->ramdump[i])->start_addr = *reg;
@@ -1401,7 +1494,7 @@ static int __ol_target_failure(struct ol_softc *scn, void *wma_hdl)
 					dbglog_buf.length) != A_OK)
 			pr_err("%s FW dbglog_data failed\n", __func__);
 		else {
-			pr_info("%s dbglog_hdr.dbuf=%u, dbglog_data=%p,"
+			pr_info("%s dbglog_hdr.dbuf=%u, dbglog_data=%pK,"
 				"dbglog_buf.buffer=%u, dbglog_buf.length=%u\n",
 				__func__, dbglog_hdr.dbuf, dbglog_data,
 				dbglog_buf.buffer, dbglog_buf.length);
@@ -1463,16 +1556,21 @@ void ol_target_failure(void *instance, A_STATUS status)
 
 		dump_CE_debug_register(scn->hif_sc);
 		ol_copy_ramdump(scn);
+#ifndef CONFIG_NON_QC_PLATFORM_PCI
 		VOS_BUG(0);
+#endif
 	}
 #endif
 
+	vos_set_logp_in_progress(VOS_MODULE_ID_VOSS, TRUE);
 	if (vos_is_load_unload_in_progress(VOS_MODULE_ID_VOSS, NULL)) {
 		printk("%s: Loading/Unloading is in progress, ignore!\n",
 			__func__);
+		vos_set_logp_in_progress(VOS_MODULE_ID_VOSS, FALSE);
+#ifndef CONFIG_NON_QC_PLATFORM_PCI
 		return;
+#endif
 	}
-	vos_set_logp_in_progress(VOS_MODULE_ID_VOSS, TRUE);
 
 #ifdef HIF_PCI
 	ret = hif_pci_check_fw_reg(scn->hif_sc);
@@ -1501,7 +1599,8 @@ void ol_target_failure(void *instance, A_STATUS status)
 	if (__ol_target_failure(scn, wma))
 		return;
 
-#if  defined(CONFIG_CNSS) || defined(HIF_SDIO)
+#if  defined(CONFIG_CNSS) || defined(HIF_SDIO) || \
+defined(CONFIG_NON_QC_PLATFORM_PCI)
 	vos_svc_fw_shutdown_ind(scn->adf_dev->dev);
 	/* Collect the RAM dump through a workqueue */
 	if (scn->enableRamdumpCollection)
@@ -2047,6 +2146,7 @@ A_STATUS ol_patch_pll_switch(struct ol_softc * scn)
 #endif
 
 #ifdef HIF_PCI
+#ifndef CONFIG_NON_QC_PLATFORM_PCI
 /* AXI Start Address */
 #define TARGET_ADDR (0xa0000)
 
@@ -2059,12 +2159,10 @@ void ol_transfer_codeswap_struct(struct ol_softc *scn) {
 		pr_err("%s: hif_pci_softc is null\n", __func__);
 		return;
 	}
-
 	if (cnss_get_codeswap_struct(&wlan_codeswap)) {
 		pr_err("%s: failed to get codeswap structure\n", __func__);
 		return;
 	}
-
 	rv = BMIWriteMemory(scn->hif_hdl, TARGET_ADDR,
 		(u_int8_t *)&wlan_codeswap, sizeof(wlan_codeswap), scn);
 
@@ -2074,6 +2172,7 @@ void ol_transfer_codeswap_struct(struct ol_softc *scn) {
 	}
 	pr_info("%s:codeswap structure is successfully downloaded\n", __func__);
 }
+#endif
 #endif
 
 int ol_download_firmware(struct ol_softc *scn)
@@ -2085,7 +2184,14 @@ int ol_download_firmware(struct ol_softc *scn)
 	A_STATUS ret;
 #endif
 
-#ifdef HIF_PCI
+#if defined(CONFIG_NON_QC_PLATFORM_PCI)
+		if (0 != get_fw_files_for_non_qc_pci_target(&scn->fw_files,
+						scn->target_type,
+						scn->target_version)) {
+			printk("%s: No FW files from CNSS driver\n", __func__);
+			return -1;
+		}
+#elif defined(HIF_PCI)
 		if (0 != cnss_get_fw_files_for_target(&scn->fw_files,
 						scn->target_type,
 						scn->target_version)) {
@@ -2137,7 +2243,9 @@ int ol_download_firmware(struct ol_softc *scn)
 
 		if ( scn->enablesinglebinary == FALSE ) {
 #ifdef HIF_PCI
+#ifndef CONFIG_NON_QC_PLATFORM_PCI
 			ol_transfer_codeswap_struct(scn);
+#endif
 #endif
 
 			status = ol_transfer_bin_file(scn, ATH_OTP_FILE,
@@ -2149,7 +2257,7 @@ int ol_download_firmware(struct ol_softc *scn)
 				bdf_ret = param & 0xff;
 				if (!bdf_ret)
 					scn->board_id = (param >> 8) & 0xffff;
-				pr_debug("%s: chip_id:0x%0x board_id:0x%0x\n",
+				pr_err("%s: chip_id:0x%0x board_id:0x%0x\n",
 						__func__, scn->target_version,
 							scn->board_id);
 			} else if (status < 0) {
@@ -2417,6 +2525,7 @@ static int ol_ath_get_reg_table(uint32_t target_version,
 	switch (target_version) {
 	case AR6320_REV3_VERSION:
 	case AR6320_REV3_2_VERSION:
+	case QCA9377_REV1_1_VERSION:
 		reg_table->section = (tgt_reg_section *)&ar6320v3_reg_table[0];
 		reg_table->section_size = sizeof(ar6320v3_reg_table)/
 			sizeof(ar6320v3_reg_table[0]);
@@ -2806,9 +2915,16 @@ ol_sdio_extra_initialization(struct ol_softc *scn)
 			break;
 		}
 
-		param |= (HI_ACS_FLAGS_SDIO_SWAP_MAILBOX_SET|
-                  HI_ACS_FLAGS_SDIO_REDUCE_TX_COMPL_SET|
-                  HI_ACS_FLAGS_ALT_DATA_CREDIT_SIZE);
+		param |= (HI_ACS_FLAGS_SDIO_SWAP_MAILBOX_SET |
+			HI_ACS_FLAGS_ALT_DATA_CREDIT_SIZE);
+
+		if (!vos_is_ptp_tx_opt_enabled() &&
+		    !vos_is_ocb_per_pkt_tx_comp_msg_needed())
+			param |= HI_ACS_FLAGS_SDIO_REDUCE_TX_COMPL_SET;
+
+		/* enable TX completion to collect tx_desc for pktlog */
+		if (vos_is_packet_log_enabled())
+			param &= ~HI_ACS_FLAGS_SDIO_REDUCE_TX_COMPL_SET;
 
 		BMIWriteMemory(scn->hif_hdl,
 				host_interest_item_address(scn->target_type,

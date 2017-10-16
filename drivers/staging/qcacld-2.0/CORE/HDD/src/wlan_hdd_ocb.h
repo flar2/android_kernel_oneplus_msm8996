@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -96,6 +96,9 @@ struct dot11p_channel_sched {
  * @QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_DEF_TX_PARAM:
  *      default TX parameters to use in the case that a packet is sent without
  *      a TX control header
+ * @QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_TA_MAX_DURATION:
+ *      max duration after the last TA received that the local time set
+ *      by TA is synchronous to other communicating OCB STAs
  */
 enum qca_wlan_vendor_attr_ocb_set_config {
 	QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_INVALID = 0,
@@ -107,6 +110,7 @@ enum qca_wlan_vendor_attr_ocb_set_config {
 	QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_NDL_ACTIVE_STATE_ARRAY,
 	QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_FLAGS,
 	QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_DEF_TX_PARAM,
+	QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_TA_MAX_DURATION,
 	QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_AFTER_LAST,
 	QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_MAX =
 		QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_AFTER_LAST - 1,
@@ -290,6 +294,14 @@ int wlan_hdd_cfg80211_dcc_update_ndl(struct wiphy *wiphy,
 				     int data_len);
 
 void wlan_hdd_dcc_register_for_dcc_stats_event(hdd_context_t *hdd_ctx);
+
+int wlan_hdd_dsrc_config_radio_chan_stats(hdd_adapter_t *adapter,
+					  bool enable_chan_stats);
+
+int wlan_hdd_dsrc_request_radio_chan_stats(hdd_adapter_t *adapter,
+					   struct radio_chan_stats_req *req);
+
+void wlan_hdd_dsrc_deinit_chan_stats(hdd_adapter_t *adapter);
 #else
 static inline void hdd_set_dot11p_config(hdd_context_t *hdd_ctx)
 {
@@ -369,6 +381,23 @@ static inline int wlan_hdd_cfg80211_dcc_update_ndl(struct wiphy *wiphy,
 
 static inline void wlan_hdd_dcc_register_for_dcc_stats_event(
 		hdd_context_t *hdd_ctx)
+{
+	return;
+}
+
+static inline int wlan_hdd_dsrc_config_radio_chan_stats(hdd_adapter_t *adapter,
+		bool enable_chan_stats)
+{
+	return 0;
+}
+
+static inline int wlan_hdd_dsrc_request_radio_chan_stats(hdd_adapter_t *adapter,
+		struct radio_chan_stats_req *req)
+{
+	return 0;
+}
+
+static inline void wlan_hdd_dsrc_deinit_chan_stats(hdd_adapter_t *adapter)
 {
 	return;
 }

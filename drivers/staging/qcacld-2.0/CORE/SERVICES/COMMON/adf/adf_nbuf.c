@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -708,6 +708,9 @@ __adf_nbuf_data_get_icmp_subtype(uint8_t *data)
 	subtype = (uint8_t)(*(uint8_t *)
 			(data + ICMP_SUBTYPE_OFFSET));
 
+	VOS_TRACE(VOS_MODULE_ID_ADF, VOS_TRACE_LEVEL_DEBUG,
+		"ICMP proto type: 0x%02x", subtype);
+
 	switch (subtype) {
 	case ICMP_REQUEST:
 		proto_subtype = ADF_PROTO_ICMP_REQ;
@@ -740,12 +743,21 @@ __adf_nbuf_data_get_icmpv6_subtype(uint8_t *data)
 	subtype = (uint8_t)(*(uint8_t *)
 			(data + ICMPV6_SUBTYPE_OFFSET));
 
+	VOS_TRACE(VOS_MODULE_ID_ADF, VOS_TRACE_LEVEL_DEBUG,
+		"ICMPv6 proto type: 0x%02x", subtype);
+
 	switch (subtype) {
 	case ICMPV6_REQUEST:
 		proto_subtype = ADF_PROTO_ICMPV6_REQ;
 		break;
 	case ICMPV6_RESPONSE:
 		proto_subtype = ADF_PROTO_ICMPV6_RES;
+		break;
+	case ICMPV6_RS:
+		proto_subtype = ADF_PROTO_ICMPV6_RS;
+		break;
+	case ICMPV6_RA:
+		proto_subtype = ADF_PROTO_ICMPV6_RA;
 		break;
 	case ICMPV6_NS:
 		proto_subtype = ADF_PROTO_ICMPV6_NS;
@@ -1186,6 +1198,486 @@ __adf_nbuf_trace_update(struct sk_buff *buf, char *event_string)
 }
 #endif /* QCA_PKT_PROTO_TRACE */
 
+#ifdef MEMORY_DEBUG
+#define ADF_NET_BUF_TRACK_MAX_SIZE    (1024)
+
+/**
+ * struct adf_nbuf_track_t - Network buffer track structure
+ *
+ * @p_next: Pointer to next
+ * @net_buf: Pointer to network buffer
+ * @file_name: File name
+ * @line_num: Line number
+ * @size: Size
+ */
+struct adf_nbuf_track_t {
+	struct adf_nbuf_track_t *p_next;
+	adf_nbuf_t net_buf;
+	uint8_t *file_name;
+	uint32_t line_num;
+	size_t size;
+};
+
+static spinlock_t g_adf_net_buf_track_lock[ADF_NET_BUF_TRACK_MAX_SIZE];
+typedef struct adf_nbuf_track_t ADF_NBUF_TRACK;
+
+static ADF_NBUF_TRACK *gp_adf_net_buf_track_tbl[ADF_NET_BUF_TRACK_MAX_SIZE];
+static struct kmem_cache *nbuf_tracking_cache;
+static ADF_NBUF_TRACK *adf_net_buf_track_free_list;
+static spinlock_t adf_net_buf_track_free_list_lock;
+static uint32_t adf_net_buf_track_free_list_count;
+static uint32_t adf_net_buf_track_used_list_count;
+static uint32_t adf_net_buf_track_max_used;
+static uint32_t adf_net_buf_track_max_free;
+static uint32_t adf_net_buf_track_max_allocated;
+
+/**
+ * adf_update_max_used() - update adf_net_buf_track_max_used tracking variable
+ *
+ * tracks the max number of network buffers that the wlan driver was tracking
+ * at any one time.
+ *
+ * Return: none
+ */
+static inline void adf_update_max_used(void)
+{
+	int sum;
+
+	if (adf_net_buf_track_max_used <
+	    adf_net_buf_track_used_list_count)
+		adf_net_buf_track_max_used = adf_net_buf_track_used_list_count;
+	sum = adf_net_buf_track_free_list_count +
+		adf_net_buf_track_used_list_count;
+	if (adf_net_buf_track_max_allocated < sum)
+		adf_net_buf_track_max_allocated = sum;
+}
+
+/**
+ * adf_update_max_free() - update adf_net_buf_track_free_list_count
+ *
+ * tracks the max number tracking buffers kept in the freelist.
+ *
+ * Return: none
+ */
+static inline void adf_update_max_free(void)
+{
+	if (adf_net_buf_track_max_free <
+	    adf_net_buf_track_free_list_count)
+		adf_net_buf_track_max_free = adf_net_buf_track_free_list_count;
+}
+
+/**
+ * adf_nbuf_track_alloc() - allocate a cookie to track nbufs allocated by wlan
+ *
+ * This function pulls from a freelist if possible and uses kmem_cache_alloc.
+ * This function also adds fexibility to adjust the allocation and freelist
+ * schemes.
+ *
+ * Return: a pointer to an unused ADF_NBUF_TRACK structure may not be zeroed.
+ */
+static ADF_NBUF_TRACK *adf_nbuf_track_alloc(void)
+{
+	int flags = GFP_KERNEL;
+	unsigned long irq_flag;
+	ADF_NBUF_TRACK *new_node = NULL;
+
+	spin_lock_irqsave(&adf_net_buf_track_free_list_lock, irq_flag);
+	adf_net_buf_track_used_list_count++;
+	if (adf_net_buf_track_free_list != NULL) {
+		new_node = adf_net_buf_track_free_list;
+		adf_net_buf_track_free_list =
+			adf_net_buf_track_free_list->p_next;
+		adf_net_buf_track_free_list_count--;
+	}
+	adf_update_max_used();
+	spin_unlock_irqrestore(&adf_net_buf_track_free_list_lock, irq_flag);
+
+	if (new_node != NULL)
+		return new_node;
+
+	if (in_interrupt() || irqs_disabled() || in_atomic())
+		flags = GFP_ATOMIC;
+
+	return kmem_cache_alloc(nbuf_tracking_cache, flags);
+}
+
+/* FREEQ_POOLSIZE initial and minimum desired freelist poolsize */
+#define FREEQ_POOLSIZE 2048
+
+/**
+ * adf_nbuf_track_free() - free the nbuf tracking cookie.
+ * @node: adf nbuf tarcking node
+ *
+ * Matches calls to adf_nbuf_track_alloc.
+ * Either frees the tracking cookie to kernel or an internal
+ * freelist based on the size of the freelist.
+ *
+ * Return: none
+ */
+static void adf_nbuf_track_free(ADF_NBUF_TRACK *node)
+{
+	unsigned long irq_flag;
+
+	if (!node)
+		return;
+
+	/* Try to shrink the freelist if free_list_count > than FREEQ_POOLSIZE
+	 * only shrink the freelist if it is bigger than twice the number of
+	 * nbufs in use. If the driver is stalling in a consistent bursty
+	 * fasion, this will keep 3/4 of thee allocations from the free list
+	 * while also allowing the system to recover memory as less frantic
+	 * traffic occurs.
+	 */
+
+	spin_lock_irqsave(&adf_net_buf_track_free_list_lock, irq_flag);
+
+	adf_net_buf_track_used_list_count--;
+	if (adf_net_buf_track_free_list_count > FREEQ_POOLSIZE &&
+	   (adf_net_buf_track_free_list_count >
+	    adf_net_buf_track_used_list_count << 1)) {
+		kmem_cache_free(nbuf_tracking_cache, node);
+	} else {
+		node->p_next = adf_net_buf_track_free_list;
+		adf_net_buf_track_free_list = node;
+		adf_net_buf_track_free_list_count++;
+	}
+	adf_update_max_free();
+	spin_unlock_irqrestore(&adf_net_buf_track_free_list_lock, irq_flag);
+}
+
+/**
+ * adf_nbuf_track_prefill() - prefill the nbuf tracking cookie freelist
+ *
+ * Removes a 'warmup time' characteristic of the freelist.  Prefilling
+ * the freelist first makes it performant for the first iperf udp burst
+ * as well as steady state.
+ *
+ * Return: None
+ */
+static void adf_nbuf_track_prefill(void)
+{
+	int i;
+	ADF_NBUF_TRACK *node, *head;
+
+	/* prepopulate the freelist */
+	head = NULL;
+	for (i = 0; i < FREEQ_POOLSIZE; i++) {
+		node = adf_nbuf_track_alloc();
+		if (node == NULL)
+			continue;
+		node->p_next = head;
+		head = node;
+	}
+	while (head) {
+		node = head->p_next;
+		adf_nbuf_track_free(head);
+		head = node;
+	}
+}
+
+/**
+ * adf_nbuf_track_memory_manager_create() - manager for nbuf tracking cookies
+ *
+ * This initializes the memory manager for the nbuf tracking cookies.  Because
+ * these cookies are all the same size and only used in this feature, we can
+ * use a kmem_cache to provide tracking as well as to speed up allocations.
+ * To avoid the overhead of allocating and freeing the buffers (including SLUB
+ * features) a freelist is prepopulated here.
+ *
+ * Return: None
+ */
+static void adf_nbuf_track_memory_manager_create(void)
+{
+	spin_lock_init(&adf_net_buf_track_free_list_lock);
+	nbuf_tracking_cache = kmem_cache_create("adf_nbuf_tracking_cache",
+						sizeof(ADF_NBUF_TRACK),
+						0, 0, NULL);
+
+	adf_nbuf_track_prefill();
+}
+
+/**
+ * adf_nbuf_track_memory_manager_destroy() - manager for nbuf tracking cookies
+ *
+ * Empty the freelist and print out usage statistics when it is no longer
+ * needed. Also the kmem_cache should be destroyed here so that it can warn if
+ * any nbuf tracking cookies were leaked.
+ *
+ * Return: None
+ */
+static void adf_nbuf_track_memory_manager_destroy(void)
+{
+	ADF_NBUF_TRACK *node, *tmp;
+	unsigned long irq_flag;
+
+	adf_print("%s: %d residual freelist size",
+			  __func__, adf_net_buf_track_free_list_count);
+
+	adf_print("%s: %d max freelist size observed",
+			  __func__, adf_net_buf_track_max_free);
+
+	adf_print("%s: %d max buffers used observed",
+			  __func__, adf_net_buf_track_max_used);
+
+	adf_print("%s: %d max buffers allocated observed",
+			  __func__, adf_net_buf_track_max_allocated);
+
+	spin_lock_irqsave(&adf_net_buf_track_free_list_lock, irq_flag);
+	node = adf_net_buf_track_free_list;
+
+	while (node) {
+		tmp = node;
+		node = node->p_next;
+		kmem_cache_free(nbuf_tracking_cache, tmp);
+		adf_net_buf_track_free_list_count--;
+	}
+
+	if (adf_net_buf_track_free_list_count != 0)
+		adf_print("%s: %d unfreed tracking memory lost in freelist",
+			  __func__, adf_net_buf_track_free_list_count);
+
+	if (adf_net_buf_track_used_list_count != 0)
+		adf_print("%s: %d unfreed tracking memory still in use",
+			  __func__, adf_net_buf_track_used_list_count);
+
+	spin_unlock_irqrestore(&adf_net_buf_track_free_list_lock, irq_flag);
+	kmem_cache_destroy(nbuf_tracking_cache);
+}
+
+/**
+ * adf_net_buf_debug_init() - initialize network buffer debug functionality
+ *
+ * ADF network buffer debug feature tracks all SKBs allocated by WLAN driver
+ * in a hash table and when driver is unloaded it reports about leaked SKBs.
+ * WLAN driver module whose allocated SKB is freed by network stack are
+ * suppose to call adf_net_buf_debug_release_skb() such that the SKB is not
+ * reported as memory leak.
+ *
+ * Return: none
+ */
+void adf_net_buf_debug_init(void)
+{
+	uint32_t i;
+
+	adf_nbuf_track_memory_manager_create();
+
+	for (i = 0; i < ADF_NET_BUF_TRACK_MAX_SIZE; i++) {
+		gp_adf_net_buf_track_tbl[i] = NULL;
+		spin_lock_init(&g_adf_net_buf_track_lock[i]);
+	}
+
+	return;
+}
+
+/**
+ * adf_net_buf_debug_exit() - exit network buffer debug functionality
+ *
+ * Exit network buffer tracking debug functionality and log SKB memory leaks
+ * As part of exiting the functionality, free the leaked memory and
+ * cleanup the tracking buffers.
+ *
+ * Return: none
+ */
+void adf_net_buf_debug_exit(void)
+{
+	uint32_t i;
+	unsigned long irq_flag;
+	ADF_NBUF_TRACK *p_node;
+	ADF_NBUF_TRACK *p_prev;
+
+	for (i = 0; i < ADF_NET_BUF_TRACK_MAX_SIZE; i++) {
+		spin_lock_irqsave(&g_adf_net_buf_track_lock[i], irq_flag);
+		p_node = gp_adf_net_buf_track_tbl[i];
+		while (p_node) {
+			p_prev = p_node;
+			p_node = p_node->p_next;
+			adf_print("SKB buf memory Leak@ File %s, @Line %d, size %zu",
+				  p_prev->file_name, p_prev->line_num,
+				  p_prev->size);
+			adf_nbuf_track_free(p_prev);
+		}
+		spin_unlock_irqrestore(&g_adf_net_buf_track_lock[i], irq_flag);
+	}
+
+	adf_nbuf_track_memory_manager_destroy();
+
+	return;
+}
+
+/**
+ * adf_net_buf_debug_hash() - hash network buffer pointer
+ *
+ * Return: hash value
+ */
+uint32_t adf_net_buf_debug_hash(adf_nbuf_t net_buf)
+{
+	uint32_t i;
+
+	i = (uint32_t) (((uintptr_t) net_buf) >> 4);
+	i += (uint32_t) (((uintptr_t) net_buf) >> 14);
+	i &= (ADF_NET_BUF_TRACK_MAX_SIZE - 1);
+
+	return i;
+}
+
+/**
+ * adf_net_buf_debug_look_up() - look up network buffer in debug hash table
+ *
+ * Return: If skb is found in hash table then return pointer to network buffer
+ *         else return NULL
+ */
+ADF_NBUF_TRACK *adf_net_buf_debug_look_up(adf_nbuf_t net_buf)
+{
+	uint32_t i;
+	ADF_NBUF_TRACK *p_node;
+
+	i = adf_net_buf_debug_hash(net_buf);
+	p_node = gp_adf_net_buf_track_tbl[i];
+
+	while (p_node) {
+		if (p_node->net_buf == net_buf)
+			return p_node;
+		p_node = p_node->p_next;
+	}
+
+	return NULL;
+}
+
+/**
+ * adf_net_buf_debug_add_node() - store skb in debug hash table
+ *
+ * Return: none
+ */
+void adf_net_buf_debug_add_node(adf_nbuf_t net_buf, size_t size,
+				uint8_t *file_name, uint32_t line_num)
+{
+	uint32_t i;
+	unsigned long irq_flag;
+	ADF_NBUF_TRACK *p_node;
+	ADF_NBUF_TRACK *new_node;
+
+	new_node = adf_nbuf_track_alloc();
+
+	i = adf_net_buf_debug_hash(net_buf);
+	spin_lock_irqsave(&g_adf_net_buf_track_lock[i], irq_flag);
+
+	p_node = adf_net_buf_debug_look_up(net_buf);
+
+	if (p_node) {
+		adf_print("Double allocation of skb ! Already allocated from %pK %s %d current alloc from %pK %s %d",
+			  p_node->net_buf, p_node->file_name, p_node->line_num,
+			  net_buf, file_name, line_num);
+		adf_os_warn(1);
+		adf_nbuf_track_free(new_node);
+		goto done;
+	} else {
+		p_node = new_node;
+		if (p_node) {
+			p_node->net_buf = net_buf;
+			p_node->file_name = file_name;
+			p_node->line_num = line_num;
+			p_node->size = size;
+			p_node->p_next = gp_adf_net_buf_track_tbl[i];
+			gp_adf_net_buf_track_tbl[i] = p_node;
+		} else {
+			adf_print(
+				  "Mem alloc failed ! Could not track skb from %s %d of size %zu",
+				  file_name, line_num, size);
+			adf_os_warn(1);
+		}
+	}
+
+done:
+	spin_unlock_irqrestore(&g_adf_net_buf_track_lock[i], irq_flag);
+
+	return;
+}
+
+/**
+ * adf_net_buf_debug_delete_node() - remove skb from debug hash table
+ *
+ * Return: none
+ */
+void adf_net_buf_debug_delete_node(adf_nbuf_t net_buf)
+{
+	uint32_t i;
+	bool found = false;
+	ADF_NBUF_TRACK *p_head;
+	ADF_NBUF_TRACK *p_node;
+	unsigned long irq_flag;
+	ADF_NBUF_TRACK *p_prev;
+
+	i = adf_net_buf_debug_hash(net_buf);
+	spin_lock_irqsave(&g_adf_net_buf_track_lock[i], irq_flag);
+
+	p_head = gp_adf_net_buf_track_tbl[i];
+
+	/* Unallocated SKB */
+	if (!p_head)
+		goto done;
+
+	p_node = p_head;
+	/* Found at head of the table */
+	if (p_head->net_buf == net_buf) {
+		gp_adf_net_buf_track_tbl[i] = p_node->p_next;
+		found = true;
+		goto done;
+	}
+
+	/* Search in collision list */
+	while (p_node) {
+		p_prev = p_node;
+		p_node = p_node->p_next;
+		if ((NULL != p_node) && (p_node->net_buf == net_buf)) {
+			p_prev->p_next = p_node->p_next;
+			found = true;
+			break;
+		}
+	}
+
+done:
+	spin_unlock_irqrestore(&g_adf_net_buf_track_lock[i], irq_flag);
+
+	if (!found) {
+		adf_print("Unallocated buffer ! Double free of net_buf %pK ?",
+			  net_buf);
+		adf_os_warn(1);
+	} else {
+		adf_nbuf_track_free(p_node);
+	}
+
+	return;
+}
+
+/**
+ * adf_net_buf_debug_release_skb() - release skb to avoid memory leak
+ * @net_buf: Network buf holding head segment (single)
+ *
+ * WLAN driver module whose allocated SKB is freed by network stack are
+ * suppose to call this API before returning SKB to network stack such
+ * that the SKB is not reported as memory leak.
+ *
+ * Return: none
+ */
+void adf_net_buf_debug_release_skb(adf_nbuf_t net_buf)
+{
+	adf_nbuf_t ext_list = adf_nbuf_get_ext_list(net_buf);
+
+	while (ext_list) {
+		/*
+		 * Take care to free if it is Jumbo packet connected using
+		 * frag_list
+		 */
+		adf_nbuf_t next;
+
+		next = adf_nbuf_queue_next(ext_list);
+		adf_net_buf_debug_delete_node(ext_list);
+		ext_list = next;
+	}
+	adf_net_buf_debug_delete_node(net_buf);
+}
+#endif /*MEMORY_DEBUG */
+
 /**
  * adf_nbuf_update_radiotap() - Update radiotap header from rx_status
  *
@@ -1216,15 +1708,24 @@ int adf_nbuf_update_radiotap(struct mon_rx_status *rx_status, adf_nbuf_t nbuf,
 	rtap_len += 1;
 
 	/* IEEE80211_RADIOTAP_RATE  u8           500kb/s*/
-	rthdr->it_present |= cpu_to_le32(1 << IEEE80211_RADIOTAP_RATE);
-	rtap_buf[rtap_len] = rx_status->rate;
-	rtap_len += 1;
+	if (!(rx_status->mcs_info.valid || rx_status->vht_info.valid)) {
+		rthdr->it_present |=
+			cpu_to_le32(1 << IEEE80211_RADIOTAP_RATE);
+		rtap_buf[rtap_len] = rx_status->rate;
+		rtap_len += 1;
+	}
+
+	/* IEEE80211_RADIOTAP_CHANNEL */
 	rthdr->it_present |= cpu_to_le32(1 << IEEE80211_RADIOTAP_CHANNEL);
-	/* IEEE80211_RADIOTAP_CHANNEL, Channel frequency in Mhz */
+	/* padding */
+	if (rx_status->mcs_info.valid || rx_status->vht_info.valid) {
+		rtap_buf[rtap_len] = 0;
+		rtap_len += 1;
+	}
+	/* Channel frequency in Mhz */
 	put_unaligned_le16(rx_status->chan, (void *)&rtap_buf[rtap_len]);
 	rtap_len += 2;
 	/* Channel flags. */
-
 	put_unaligned_le16(rx_status->chan_flags, (void *)&rtap_buf[rtap_len]);
 	rtap_len += 2;
 
@@ -1238,16 +1739,123 @@ int adf_nbuf_update_radiotap(struct mon_rx_status *rx_status, adf_nbuf_t nbuf,
 	rtap_buf[rtap_len] = rx_status->ant_signal_db +
 		NORMALIZED_TO_NOISE_FLOOR;
 	rtap_len += 1;
+
+	/* IEEE80211_RADIOTAP_DBM_ANTNOISE */
+	rthdr->it_present |= cpu_to_le32(1 << IEEE80211_RADIOTAP_DBM_ANTNOISE);
+	rtap_buf[rtap_len] = NORMALIZED_TO_NOISE_FLOOR;
+	rtap_len += 1;
+
+	/* IEEE80211_RADIOTAP_ANTENNA */
 	rthdr->it_present |= cpu_to_le32(1 << IEEE80211_RADIOTAP_ANTENNA);
 	rtap_buf[rtap_len] = rx_status->nr_ant;
 	rtap_len += 1;
 
+	/* IEEE80211_RADIOTAP_MCS: u8 known, u8 flags, u8 mcs */
+	if (rx_status->mcs_info.valid) {
+		rthdr->it_present |= cpu_to_le32(1 << IEEE80211_RADIOTAP_MCS);
+		/*
+		 * known fields: band width, mcs index, short GI, FEC type,
+		 * STBC streams, ness.
+		 */
+		rtap_buf[rtap_len] = 0x77;
+		rtap_len += 1;
+		/* band width */
+		rtap_buf[rtap_len] = 0;
+		rtap_buf[rtap_len] |= (rx_status->mcs_info.bw & 0x3);
+		/* short GI */
+		rtap_buf[rtap_len] |= ((rx_status->mcs_info.sgi << 2) & 0x4);
+		/* FEC type */
+		rtap_buf[rtap_len] |= ((rx_status->mcs_info.fec << 4) & 0x10);
+		/* STBC streams */
+		rtap_buf[rtap_len] |= ((rx_status->mcs_info.stbc << 5) & 0x60);
+		/* ness */
+		rtap_buf[rtap_len] |= ((rx_status->mcs_info.ness << 7) & 0x80);
+		rtap_len += 1;
+		/* mcs index */
+		rtap_buf[rtap_len] = rx_status->mcs_info.mcs;
+		rtap_len += 1;
+	}
+
+	/* IEEE80211_RADIOTAP_VHT: u16, u8, u8, u8[4], u8, u8, u16 */
+	if (rx_status->vht_info.valid) {
+		rthdr->it_present |= cpu_to_le32(1 << IEEE80211_RADIOTAP_VHT);
+		/* padding */
+		rtap_buf[rtap_len] = 0;
+		rtap_len += 1;
+		/*
+		 * known fields: STBC, TXOP_PS_NOT_ALLOWED,
+		 * Short GI NSYM disambiguation, short GI,
+		 * LDPC extra OFDM symbol, Beamformed ,
+		 * bandwidth, gid, Partial AID
+		 */
+		put_unaligned_le16(0x1ff, (void *)&rtap_buf[rtap_len]);
+		rtap_len += 2;
+		/* STBC */
+		rtap_buf[rtap_len] = 0;
+		rtap_buf[rtap_len] |= (rx_status->vht_info.stbc & 0x1);
+		/* TXOP_PS_NOT_ALLOWED */
+		rtap_buf[rtap_len] |=
+			((rx_status->vht_info.txps_forbidden << 1) & 0x2);
+		/* short GI */
+		rtap_buf[rtap_len] |=
+			((rx_status->vht_info.sgi << 2) & 0x4);
+		/* short GI NSYM disambiguation */
+		rtap_buf[rtap_len] |=
+			((rx_status->vht_info.sgi_disambiguation << 3) & 0x8);
+		/* LDPC Extra OFDM symbol */
+		rtap_buf[rtap_len] |=
+			((rx_status->vht_info.ldpc_extra_symbol << 4) & 0x10);
+		/* Beamformed */
+		rtap_buf[rtap_len] |=
+			((rx_status->vht_info.beamformed << 5) & 0x20);
+		rtap_len += 1;
+		/* band width, transform to radiotap format */
+		rtap_buf[rtap_len] =
+			((rx_status->vht_info.bw == 2) ?
+			 4 : rx_status->vht_info.bw) & 0x1f;
+		rtap_len += 1;
+		/* nss */
+		rtap_buf[rtap_len] |= ((1 + rx_status->vht_info.nss) & 0x0f);
+		/* mcs */
+		rtap_buf[rtap_len] |= ((rx_status->vht_info.mcs << 4) & 0xf0);
+		rtap_len += 1;
+		/* only support SG, so set 0 other 3 users */
+		rtap_buf[rtap_len] = 0;
+		rtap_len += 1;
+		rtap_buf[rtap_len] = 0;
+		rtap_len += 1;
+		rtap_buf[rtap_len] = 0;
+		rtap_len += 1;
+		/* LDPC */
+		rtap_buf[rtap_len] = rx_status->vht_info.coding;
+		rtap_len += 1;
+		/* gid */
+		rtap_buf[rtap_len] = rx_status->vht_info.gid;
+		rtap_len += 1;
+		/* pid */
+		put_unaligned_le16((uint16_t)(rx_status->vht_info.paid),
+				   (void *)&rtap_buf[rtap_len]);
+		rtap_len += 2;
+	}
+
 	rthdr->it_len = cpu_to_le16(rtap_len);
 
-	adf_nbuf_pull_head(nbuf, headroom_sz  - rtap_len);
-	adf_os_mem_copy(adf_nbuf_data(nbuf), rthdr, rtap_hdr_len);
-	adf_os_mem_copy(adf_nbuf_data(nbuf) + rtap_hdr_len, rtap_buf +
-			rtap_hdr_len, rtap_len - rtap_hdr_len);
+	if (headroom_sz >= rtap_len) {
+		adf_nbuf_pull_head(nbuf, headroom_sz  - rtap_len);
+		adf_os_mem_copy(adf_nbuf_data(nbuf), rthdr, rtap_len);
+	} else {
+		/* If no headroom, append to tail */
+		uint8_t *rtap_start = adf_nbuf_put_tail(nbuf, rtap_len);
+
+		if (!rtap_start) {
+			adf_print("No enough tail room to save radiotap len: "
+				"%d", rtap_len);
+			return 0;
+		}
+		adf_os_mem_copy(rtap_start, rthdr, rtap_len);
+		adf_nbuf_trim_tail(nbuf, rtap_len);
+	}
+
 	return rtap_len;
 }
 

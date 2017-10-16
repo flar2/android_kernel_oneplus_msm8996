@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -38,7 +38,7 @@
  *
  */
 #include "palTypes.h"
-#include "wniCfgSta.h"
+#include "wni_cfg.h"
 #include "wniApi.h"
 #include "sirCommon.h"
 #include "sirDebug.h"
@@ -243,6 +243,17 @@ static void __limInitStates(tpAniSirGlobal pMac)
     pMac->lim.gLimProbeRespDisableFlag = 0; // control over probe response
 }
 
+#ifdef FEATURE_OEM_DATA_SUPPORT
+static void lim_set_oem_data_req(tpAniSirGlobal mac)
+{
+	mac->lim.gpLimMlmOemDataReq = NULL;
+}
+#else
+static inline void lim_set_oem_data_req(tpAniSirGlobal mac)
+{
+}
+#endif
+
 static void __limInitVars(tpAniSirGlobal pMac)
 {
     // Place holder for Measurement Req/Rsp/Ind related info
@@ -293,7 +304,7 @@ static void __limInitVars(tpAniSirGlobal pMac)
     /* Init SAP deffered Q Head */
     lim_init_sap_deferred_msg_queue(pMac);
 #endif
-    pMac->lim.gpLimMlmOemDataReq = NULL;
+    lim_set_oem_data_req(pMac);
 }
 
 static void __limInitAssocVars(tpAniSirGlobal pMac)
@@ -976,6 +987,24 @@ pe_open_psession_fail:
     return status;
 }
 
+#ifdef FEATURE_OEM_DATA_SUPPORT
+static void lim_free_oem_data_req(tpAniSirGlobal mac)
+{
+	if (mac->lim.gpLimMlmOemDataReq) {
+		if (mac->lim.gpLimMlmOemDataReq->data) {
+			vos_mem_free(mac->lim.gpLimMlmOemDataReq->data);
+			mac->lim.gpLimMlmOemDataReq->data = NULL;
+		}
+		vos_mem_free(mac->lim.gpLimMlmOemDataReq);
+		mac->lim.gpLimMlmOemDataReq = NULL;
+	}
+}
+#else
+static inline void lim_free_oem_data_req(tpAniSirGlobal mac)
+{
+}
+#endif
+
 /** -------------------------------------------------------------
 \fn peClose
 \brief will be called in close sequence from macClose
@@ -999,16 +1028,7 @@ tSirRetStatus peClose(tpAniSirGlobal pMac)
     }
     vos_mem_free(pMac->lim.limTimers.gpLimCnfWaitTimer);
     pMac->lim.limTimers.gpLimCnfWaitTimer = NULL;
-
-    if (pMac->lim.gpLimMlmOemDataReq) {
-        if (pMac->lim.gpLimMlmOemDataReq->data) {
-            vos_mem_free(pMac->lim.gpLimMlmOemDataReq->data);
-            pMac->lim.gpLimMlmOemDataReq->data = NULL;
-        }
-        vos_mem_free(pMac->lim.gpLimMlmOemDataReq);
-        pMac->lim.gpLimMlmOemDataReq = NULL;
-    }
-
+    lim_free_oem_data_req(pMac);
     vos_mem_free(pMac->lim.gpSession);
     pMac->lim.gpSession = NULL;
     vos_mem_free(pMac->pmm.gPmmTim.pTim);
@@ -2372,7 +2392,7 @@ void limRoamOffloadSynchInd(tpAniSirGlobal pMac, tpSirMsgQ pMsg)
      pftSessionEntry->limPrevSmeState = pftSessionEntry->limSmeState;
      pftSessionEntry->limSmeState = eLIM_SME_WT_REASSOC_STATE;
      VOS_TRACE(VOS_MODULE_ID_PE, VOS_TRACE_LEVEL_DEBUG,
-               "LFR3:%s:created session (%p) with id = %d",
+               "LFR3:%s:created session (%pK) with id = %d",
                __func__, pftSessionEntry, pftSessionEntry->peSessionId);
      /* Update the ReAssoc BSSID of the current session */
      sirCopyMacAddr(psessionEntry->limReAssocbssId, pbssDescription->bssId);
@@ -2415,6 +2435,7 @@ void lim_mon_init_session(tpAniSirGlobal mac_ptr,
 		return;
 	}
 	psession_entry->vhtCapability = 1;
+	psession_entry->sub20_channelwidth = mac_ptr->sub20_channelwidth;
 }
 
 /** -----------------------------------------------------------------

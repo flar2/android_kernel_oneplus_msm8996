@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -44,7 +44,7 @@
 //---------------------------------------------------------------------
 // Static Variables
 //----------------------------------------------------------------------
-static tCfgCtl   __gCfgEntry[CFG_PARAM_MAX_NUM]                ;
+static tCfgCtl   __gCfgEntry[WNI_CFG_MAX]                ;
 static tANI_U32  __gCfgIBufMin[CFG_STA_IBUF_MAX_SIZE]          ;
 static tANI_U32  __gCfgIBufMax[CFG_STA_IBUF_MAX_SIZE]          ;
 static tANI_U32  __gCfgIBuf[CFG_STA_IBUF_MAX_SIZE]             ;
@@ -141,7 +141,10 @@ tSirRetStatus cfgInit(tpAniSirGlobal pMac)
     pMac->cfg.gSBuffer     = __gSBuffer;
     pMac->cfg.gCfgEntry    = __gCfgEntry;
 
-    for (i = 0; i < CFG_PARAM_MAX_NUM; i++) {
+    pMac->cfg.gCfgMaxIBufSize = CFG_STA_IBUF_MAX_SIZE;
+    pMac->cfg.gCfgMaxSBufSize = CFG_STA_SBUF_MAX_SIZE;
+
+    for (i = 0; i < WNI_CFG_MAX; i++) {
         if (!(cfg_static[i].control & CFG_CTL_INT))
             cfg_get_str_index(pMac, i);
         else
@@ -196,7 +199,7 @@ cfgSetInt(tpAniSirGlobal pMac, tANI_U16 cfgId, tANI_U32 value)
     tANI_U32      control, mask;
     tSirRetStatus  retVal;
 
-    if (cfgId >= CFG_PARAM_MAX_NUM)
+    if (cfgId >= WNI_CFG_MAX)
     {
         PELOGE(cfgLog(pMac, LOGE, FL("Invalid cfg id %d"), cfgId);)
         return eSIR_CFG_INVALID_ID;
@@ -276,7 +279,7 @@ cfgCheckValid(tpAniSirGlobal pMac, tANI_U16 cfgId)
 {
     tANI_U32      control;
 
-    if (cfgId >= CFG_PARAM_MAX_NUM)
+    if (cfgId >= WNI_CFG_MAX)
     {
         PELOG3(cfgLog(pMac, LOG3, FL("Invalid cfg id %d"), cfgId);)
         return(eSIR_CFG_INVALID_ID);
@@ -327,7 +330,7 @@ wlan_cfgGetInt(tpAniSirGlobal pMac, tANI_U16 cfgId, tANI_U32 *pValue)
     tANI_U32      control;
     tSirRetStatus  retVal;
 
-    if (cfgId >= CFG_PARAM_MAX_NUM)
+    if (cfgId >= WNI_CFG_MAX)
     {
         PELOGE(cfgLog(pMac, LOGE, FL("Invalid cfg id %d"), cfgId);)
         retVal = eSIR_CFG_INVALID_ID;
@@ -437,7 +440,7 @@ cfgSetStrNotify(tpAniSirGlobal pMac, tANI_U16 cfgId, tANI_U8 *pStr,
     tANI_U32      index, paramLen, control, mask;
     tSirRetStatus  retVal;
 
-    if (cfgId >= CFG_PARAM_MAX_NUM)
+    if (cfgId >= WNI_CFG_MAX)
     {
         PELOGE(cfgLog(pMac, LOGE, FL("Invalid cfg id %d"), cfgId);)
         return eSIR_CFG_INVALID_ID;
@@ -539,7 +542,7 @@ wlan_cfgGetStr(tpAniSirGlobal pMac, tANI_U16 cfgId, tANI_U8 *pBuf, tANI_U32 *pLe
     tANI_U32            index, control;
     tSirRetStatus  retVal;
 
-    if (cfgId >= CFG_PARAM_MAX_NUM)
+    if (cfgId >= WNI_CFG_MAX)
     {
         PELOGE(cfgLog(pMac, LOGE, FL("Invalid cfg id %d"), cfgId);)
         retVal = eSIR_CFG_INVALID_ID;
@@ -621,7 +624,7 @@ wlan_cfgGetStrMaxLen(tpAniSirGlobal pMac, tANI_U16 cfgId, tANI_U32 *pLength)
     tANI_U32            index, control;
     tSirRetStatus  retVal;
 
-    if (cfgId >= CFG_PARAM_MAX_NUM)
+    if (cfgId >= WNI_CFG_MAX)
     {
         PELOGE(cfgLog(pMac, LOGE, FL("Invalid cfg id %d"), cfgId);)
         retVal = eSIR_CFG_INVALID_ID;
@@ -687,7 +690,7 @@ wlan_cfgGetStrLen(tpAniSirGlobal pMac, tANI_U16 cfgId, tANI_U32 *pLength)
     tANI_U32            index, control;
     tSirRetStatus  retVal;
 
-    if (cfgId >= CFG_PARAM_MAX_NUM)
+    if (cfgId >= WNI_CFG_MAX)
     {
         PELOGE(cfgLog(pMac, LOGE, FL("Invalid cfg id %d"), cfgId);)
         retVal = eSIR_CFG_INVALID_ID;

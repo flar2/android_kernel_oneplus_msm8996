@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -262,6 +262,27 @@ typedef enum {
 
     WMI_SERVICE_WLAN_STATS_REPORT=111, /* support WLAN stats report */
 
+    /* WMI_SERVICE_TX_MSDU_ID_NEW_PARTITION_SUPPORT -
+     * FW supports bigger MSDU ID partition which is defined as
+     * HTT_TX_IPA_NEW_MSDU_ID_SPACE_BEGIN. When both host and FW support
+     * new partition, FW uses HTT_TX_IPA_NEW_MSDU_ID_SPACE_BEGIN. If host
+     * doesn't support, FW falls back to HTT_TX_IPA_MSDU_ID_SPACE_BEGIN
+     * Handshaking is done through WMI_INIT and WMI service ready
+     *
+     * support bigger MSDU ID partition
+     */
+    WMI_SERVICE_TX_MSDU_ID_NEW_PARTITION_SUPPORT = 112,
+    WMI_SERVICE_DFS_PHYERR_OFFLOAD=113,
+    WMI_SERVICE_RCPI_SUPPORT=114,
+    WMI_SERVICE_FW_MEM_DUMP_SUPPORT = 115, /* Support FW Memory dump */
+    WMI_SERVICE_PEER_STATS_INFO = 116, /* support per peer stats info */
+    WMI_SERVICE_REGULATORY_DB = 117, /* support regulatory database in FW */
+    WMI_SERVICE_11D_OFFLOAD = 118, /* support 11D scan offload in FW */
+    WMI_SERVICE_HW_DATA_FILTERING = 119,
+    WMI_SERVICE_MULTIPLE_VDEV_RESTART=120, /* Support for single command for multiple vdev restart */
+    WMI_SERVICE_PKT_ROUTING=121, /* Support for routing specific data packets to selected destination rings */
+    WMI_SERVICE_CHECK_CAL_VERSION=122, /* Support cal version check */
+    WMI_SERVICE_OFFCHAN_TX_WMI=123, /* Support offchan data/mgmt tx over wmi */
 
     /***** ADD NEW SERVICES HERE UNTIL ALL VALUES UP TO 128 ARE USED *****/
 

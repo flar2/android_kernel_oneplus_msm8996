@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -222,7 +222,7 @@ radar_summary_parse(struct ath_dfs *dfs, const char *buf, size_t len,
    OS_MEMCPY(rs, buf, sizeof(rs));
 
         DFS_DPRINTK(dfs, ATH_DEBUG_DFS_PHYERR,"%s: two 32 bit values are: %08x %08x", __func__, rs[0], rs[1]);
-// DFS_DPRINTK(dfs, ATH_DEBUG_DFS_PHYERR, "%s (p=%p):", __func__, buf);
+// DFS_DPRINTK(dfs, ATH_DEBUG_DFS_PHYERR, "%s (p=%pK):", __func__, buf);
 
    /* Populate the fields from the summary report */
    rsu->tsf_offset =
@@ -445,7 +445,7 @@ tlv_calc_freq_info(struct ath_dfs *dfs, struct rx_radar_status *rs)
     * For now, just handle up to VHT80 correctly.
     */
    if (dfs->ic == NULL || dfs->ic->ic_curchan == NULL) {
-      DFS_PRINTK("%s: dfs->ic=%p, that or curchan is null?",
+      DFS_PRINTK("%s: dfs->ic=%pK, that or curchan is null?",
           __func__, dfs->ic);
       return (0);
    }
@@ -584,7 +584,19 @@ tlv_calc_event_freq_chirp(struct ath_dfs *dfs, struct rx_radar_status *rs,
 
    total_bw = delta_peak * (bin_resolution / radar_fft_long_period) *
        pulse_duration;
-
+#if(LINUX_VERSION_CODE >= KERNEL_VERSION(4,5,0))
+   DFS_DPRINTK(dfs, ATH_DEBUG_DFS_PHYERR | ATH_DEBUG_DFS_PHYERR_SUM,
+       "%s: delta_peak=%d, pulse_duration=%d, bin_resolution=%d.%dKHz, "
+           "radar_fft_long_period=%d, total_bw=%d.%dKHz",
+       __func__,
+       delta_peak,
+       pulse_duration,
+       bin_resolution / 1000,
+       bin_resolution % 1000,
+       radar_fft_long_period,
+       total_bw / 100,
+       abs(total_bw % 100));
+#else
    DFS_DPRINTK(dfs, ATH_DEBUG_DFS_PHYERR | ATH_DEBUG_DFS_PHYERR_SUM,
        "%s: delta_peak=%d, pulse_duration=%d, bin_resolution=%d.%dKHz, "
            "radar_fft_long_period=%d, total_bw=%d.%ldKHz",
@@ -595,8 +607,8 @@ tlv_calc_event_freq_chirp(struct ath_dfs *dfs, struct rx_radar_status *rs,
        bin_resolution % 1000,
        radar_fft_long_period,
        total_bw / 100,
-       abs(total_bw % 100));
-
+       (long int)abs(total_bw % 100));
+#endif
        total_bw /= 100; /* back to KHz */
 
    /* Grab the channel centre frequency in MHz */
@@ -702,6 +714,8 @@ dfs_process_phyerr_bb_tlv(struct ath_dfs *dfs, void *buf, u_int16_t datalen,
    e->is_ext = 0;
    e->is_dc = 0;
    e->is_early = 0;
+   e->pulse_delta_peak = rs.delta_peak;
+   e->pulse_delta_diff = rs.delta_diff;
    /*
     * XXX TODO: add a "chirp detection enabled" capability or config
     * bit somewhere, in case for some reason the hardware chirp

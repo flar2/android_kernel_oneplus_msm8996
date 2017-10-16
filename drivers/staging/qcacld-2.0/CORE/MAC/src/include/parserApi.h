@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -67,9 +67,24 @@ struct sAvoidChannelIE {
 	uint8_t oui[3];
 	/* following must be 0x01 */
 	uint8_t type;
+	uint8_t type_len;
 	uint8_t channel;
 };
 #endif /* FEATURE_AP_MCC_CH_AVOIDANCE */
+
+/**
+ * struct vendor_ie_sub20_channelwidth
+ * @elem_id: Vendor Sub20 Channel Width Element id
+ * @elem_len: Vendor Sub20 Channel Width Element data length
+ * @sub20_capability: sub20 capability
+ * @new_sub20_channelwidth: new sub20 channelwidth
+ */
+struct vendor_ie_sub20_channelwidth {
+        uint8_t    elem_id;
+        uint8_t    elem_len;
+        uint8_t    sub20_capability;
+        uint8_t    new_sub20_channelwidth;
+} __packed;
 
 #define SIZE_OF_FIXED_PARAM ( 12 )
 #define SIZE_OF_TAG_PARAM_NUM  ( 1 )
@@ -90,6 +105,91 @@ typedef struct sSirCountryInformation
     } channelTransmitPower[COUNTRY_INFO_MAX_CHANNEL];
 } tSirCountryInformation,*tpSirCountryInformation;
 
+#ifdef WLAN_FEATURE_FILS_SK
+
+#define SIR_MAX_IDENTIFIER_CNT 7
+#define SIR_CACHE_IDENTIFIER_LEN 2
+#define SIR_HESSID_LEN 6
+#define SIR_MAX_KEY_CNT 7
+#define SIR_MAX_KEY_LEN 48
+
+/*
+ * struct public_key_identifier: structure for public key identifier
+ * present in fils indication element
+ * @is_present: if Key info is present
+ * @key_cnt:  number of keys present
+ * @key_type: type of key used
+ * @length: length of key
+ * @key: key data
+ */
+
+struct public_key_identifier {
+	bool is_present;
+	uint8_t key_cnt;
+	uint8_t key_type;
+	uint8_t length;
+    uint8_t key[SIR_MAX_KEY_CNT][SIR_MAX_KEY_LEN];
+};
+
+/*
+ * struct fils_cache_identifier: structure for fils cache identifier
+ * present in fils indication element
+ * @is_present: if cache identifier is present
+ * @identifier: cache identifier
+ */
+struct fils_cache_identifier {
+	bool is_present;
+	uint8_t identifier[SIR_CACHE_IDENTIFIER_LEN];
+};
+
+/*
+ * struct fils_hessid: structure for fils hessid
+ * present in fils indication element
+ * @is_present: if hessid info is present
+ * @hessid: hessid data
+ */
+struct fils_hessid {
+	bool is_present;
+	uint8_t hessid[SIR_HESSID_LEN];
+};
+
+/*
+ * struct fils_realm_identifier: structure for fils_realm_identifier
+ * present in fils indication element
+ * @is_present: if realm info is present
+ * @realm_cnt: realm count
+ * @realm: realm data
+ */
+struct fils_realm_identifier {
+	bool is_present;
+	uint8_t realm_cnt;
+	uint8_t realm[SIR_MAX_REALM_COUNT][SIR_REALM_LEN];
+};
+
+/*
+ * struct sir_fils_indication: structure for fils indication element
+ * @is_present: if indication element is present
+ * @is_ip_config_supported: if IP config is supported
+ * @is_fils_sk_auth_supported: if fils sk suppprted
+ * @is_fils_sk_auth_pfs_supported: if fils sk with pfs supported
+ * @is_pk_auth_supported: if fils public key supported
+ * @cache_identifier: fils cache idenfier info
+ * @hessid: fils hessid info
+ * @realm_identifier: fils realm info
+ * @key_identifier: fils key identifier info
+ */
+struct sir_fils_indication {
+	bool is_present;
+	uint8_t is_ip_config_supported;
+	uint8_t is_fils_sk_auth_supported;
+	uint8_t is_fils_sk_auth_pfs_supported;
+	uint8_t is_pk_auth_supported;
+	struct fils_cache_identifier cache_identifier;
+	struct fils_hessid hessid;
+	struct fils_realm_identifier realm_identifier;
+	struct public_key_identifier key_identifier;
+};
+#endif
 
 /* Structure common to Beacons & Probe Responses */
 typedef struct sSirProbeRespBeacon
@@ -173,6 +273,7 @@ typedef struct sSirProbeRespBeacon
     tANI_U8                   Vendor1IEPresent;
     tDot11fIEvendor2_ie       vendor2_ie;
     tANI_U8                   Vendor3IEPresent;
+    tDot11fIEhs20vendor_ie    hs20vendor_ie;
     tDot11fIEIBSSParams       IBSSParams;
 
 #ifdef FEATURE_AP_MCC_CH_AVOIDANCE
@@ -180,6 +281,10 @@ typedef struct sSirProbeRespBeacon
 #endif /* FEATURE_AP_MCC_CH_AVOIDANCE */
 #ifdef FEATURE_WLAN_ESE
     uint8_t    is_ese_ver_ie_present;
+#endif
+    uint8_t                   vendor_sub20_capability;
+#ifdef WLAN_FEATURE_FILS_SK
+    struct sir_fils_indication fils_ind;
 #endif
 } tSirProbeRespBeacon, *tpSirProbeRespBeacon;
 
@@ -256,6 +361,8 @@ typedef struct sSirAssocReq
 #endif
     tDot11fIEExtCap           ExtCap;
     tDot11fIEvendor2_ie       vendor2_ie;
+    uint8_t                   vendor_sub20_capability;
+    tDot11fIEhs20vendor_ie    hs20vendor_ie;
 } tSirAssocReq, *tpSirAssocReq;
 
 
@@ -313,6 +420,12 @@ typedef struct sSirAssocRsp
     tDot11fIETimeoutInterval  TimeoutInterval;
 #endif
     tDot11fIEvendor2_ie       vendor2_ie;
+    uint8_t                   vendor_sub20_capability;
+#ifdef WLAN_FEATURE_FILS_SK
+    tDot11fIEfils_session fils_session;
+    tDot11fIEfils_key_confirmation fils_key_auth;
+    tDot11fIEfils_kde fils_kde;
+#endif
 } tSirAssocRsp, *tpSirAssocRsp;
 
 #if defined(FEATURE_WLAN_ESE_UPLOAD)
@@ -488,6 +601,7 @@ sirConvertAssocReqFrame2Struct(struct sAniSirGlobal *pMac,
 
 tSirRetStatus
 sirConvertAssocRespFrame2Struct(struct sAniSirGlobal *pMac,
+                                tpPESession psessionEntry,
                                 tANI_U8 * frame,
                                 tANI_U32 len,
                                 tpSirAssocRsp assoc);
@@ -632,6 +746,22 @@ populate_dot11f_avoid_channel_ie(tpAniSirGlobal mac_ctx,
 				 tpPESession session_entry);
 #endif /* FEATURE_AP_MCC_CH_AVOIDANCE */
 
+#ifdef FEATURE_WLAN_SUB_20_MHZ
+void
+populate_dot11f_sub_20_channel_width_ie(tpAniSirGlobal mac_ctx_ptr,
+                                        tDot11fIEQComVendorIE *dot11f_ptr,
+                                        tpPESession pe_session);
+#else
+static inline void
+populate_dot11f_sub_20_channel_width_ie(
+	tpAniSirGlobal mac_ctx_ptr,
+	tDot11fIEQComVendorIE *dot11f_ptr,
+	tpPESession pe_session)
+{
+	dot11f_ptr->Sub20Info.present = false;
+	return;
+}
+#endif
 /// Populate a tDot11fIECountry
 tSirRetStatus
 PopulateDot11fCountry(tpAniSirGlobal    pMac,
@@ -963,7 +1093,6 @@ void PopulateDot11fAssocRspRates ( tpAniSirGlobal pMac, tDot11fIESuppRates *pSup
 int FindIELocation( tpAniSirGlobal pMac,
                            tpSirRSNie pRsnIe,
                            tANI_U8 EID);
-#endif
 
 #ifdef WLAN_FEATURE_11AC
 tSirRetStatus
@@ -1010,3 +1139,38 @@ tSirRetStatus sirvalidateandrectifyies(tpAniSirGlobal pMac,
                                        tANI_U8 *pMgmtFrame,
                                        tANI_U32 nFrameBytes,
                                        tANI_U32 *nMissingRsnBytes);
+
+/**
+ * sir_copy_hs20_ie() - Update HS 2.0 Information Element.
+ * @dest: dest HS IE buffer to be updated
+ * @src: src HS IE buffer
+ *
+ * Update HS2.0 IE info from src to dest
+ *
+ * Return: void
+ */
+void sir_copy_hs20_ie(tDot11fIEhs20vendor_ie *dest,
+                      tDot11fIEhs20vendor_ie *src);
+
+#ifdef WLAN_FEATURE_FILS_SK
+/**
+ * populate_dot11f_fils_params() - Populate FILS IE to frame
+ * @mac_ctx: global mac context
+ * @frm: Assoc request frame
+ * @pe_session: PE session
+ *
+ * This API is used to populate FILS IE to Association request
+ *
+ * Return: None
+ */
+void populate_dot11f_fils_params(tpAniSirGlobal mac_ctx,
+                 tDot11fAssocRequest *frm,
+                 tpPESession pe_session);
+#else
+static inline void populate_dot11f_fils_params(tpAniSirGlobal mac_ctx,
+                 tDot11fAssocRequest *frm,
+                 tpPESession pe_session)
+{}
+#endif
+
+#endif  /* __PARSE_H__ */

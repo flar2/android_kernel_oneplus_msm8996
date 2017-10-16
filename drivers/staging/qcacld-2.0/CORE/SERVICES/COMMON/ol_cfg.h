@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2014, 2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2014, 2016-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -89,11 +89,21 @@ struct txrx_pdev_cfg_t {
 	u8 rx_fwd_disabled;
 	u8 is_packet_log_enabled;
 	u8 is_full_reorder_offload;
+#ifdef WLAN_FEATURE_TSF_PLUS
+	u8 is_ptp_rx_opt_enabled;
+	a_bool_t is_ptp_enabled;
+#endif
 #ifdef IPA_UC_OFFLOAD
 	struct wlan_ipa_uc_rsc_t ipa_uc_rsc;
 #endif /* IPA_UC_OFFLOAD */
 	uint16_t pkt_bundle_timer_value;
 	uint16_t pkt_bundle_size;
+
+#ifdef QCA_SUPPORT_TXRX_DRIVER_TCP_DEL_ACK
+	uint8_t  del_ack_enable;
+	uint16_t del_ack_timer_value;
+	uint16_t del_ack_pkt_count;
+#endif
 
 	struct ol_tx_sched_wrr_ac_specs_t ac_specs[OL_TX_NUM_WMM_AC];
 };
@@ -476,6 +486,38 @@ void ol_set_cfg_packet_log_enabled(ol_pdev_handle pdev, u_int8_t val);
  */
 u_int8_t ol_cfg_is_packet_log_enabled(ol_pdev_handle pdev);
 
+#ifdef WLAN_FEATURE_TSF_PLUS
+void ol_set_cfg_ptp_rx_opt_enabled(ol_pdev_handle pdev, u_int8_t val);
+u_int8_t ol_cfg_is_ptp_rx_opt_enabled(ol_pdev_handle pdev);
+a_bool_t ol_cfg_is_ptp_enabled(ol_pdev_handle pdev);
+void ol_cfg_update_ptp_params(struct txrx_pdev_cfg_t *cfg_ctx,
+                             struct txrx_pdev_cfg_param_t cfg_param);
+#else
+static inline void
+ol_set_cfg_ptp_rx_opt_enabled(ol_pdev_handle pdev, u_int8_t val)
+{
+}
+
+static inline u_int8_t
+ol_cfg_is_ptp_rx_opt_enabled(ol_pdev_handle pdev)
+{
+	return 0;
+}
+
+static inline a_bool_t
+ol_cfg_is_ptp_enabled(ol_pdev_handle pdev)
+{
+	return 0;
+}
+
+static inline void
+ol_cfg_update_ptp_params(struct txrx_pdev_cfg_t *cfg_ctx,
+                             struct txrx_pdev_cfg_param_t cfg_param)
+{
+	return;
+}
+#endif
+
 #ifdef IPA_UC_OFFLOAD
 /**
  * @brief IPA micro controller data path offload enable or not
@@ -524,6 +566,7 @@ unsigned int ol_cfg_ipa_uc_tx_partition_base(ol_pdev_handle pdev);
 
 #define DEFAULT_BUNDLE_TIMER_VALUE 100
 
+
 #ifdef QCA_SUPPORT_TXRX_HL_BUNDLE
 int ol_cfg_get_bundle_timer_value(ol_pdev_handle pdev);
 int ol_cfg_get_bundle_size(ol_pdev_handle pdev);
@@ -541,6 +584,19 @@ int ol_cfg_get_bundle_size(ol_pdev_handle pdev)
 }
 #endif
 
+#ifdef QCA_SUPPORT_TXRX_DRIVER_TCP_DEL_ACK
+int ol_cfg_get_del_ack_timer_value(ol_pdev_handle pdev);
+int ol_cfg_get_del_ack_enable_value(ol_pdev_handle pdev);
+int ol_cfg_get_del_ack_count_value(ol_pdev_handle pdev);
+void ol_cfg_update_del_ack_params(struct txrx_pdev_cfg_t *cfg_ctx,
+	struct txrx_pdev_cfg_param_t cfg_param);
+#else
+static inline
+void ol_cfg_update_del_ack_params(struct txrx_pdev_cfg_t *cfg_ctx,
+	struct txrx_pdev_cfg_param_t cfg_param)
+{
+}
+#endif
 
 int ol_cfg_get_wrr_skip_weight(ol_pdev_handle pdev, int ac);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014, 2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, 2016-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -73,6 +73,7 @@
 #define ADF_NBUF_SRC_MAC_OFFSET         6
 #define ADF_NBUF_TRAC_IPV4_PROTO_TYPE_OFFSET  23
 #define ADF_NBUF_TRAC_IPV4_DEST_ADDR_OFFSET   30
+#define ADF_NBUF_TRAC_IPV4_SRC_ADDR_OFFSET    26
 #define ADF_NBUF_TRAC_IPV6_PROTO_TYPE_OFFSET  20
 #define ADF_NBUF_TRAC_IPV6_DEST_ADDR_OFFSET   38
 #define ADF_NBUF_TRAC_IPV6_DEST_ADDR          0xFF00
@@ -81,6 +82,14 @@
 #define ADF_NBUF_TRAC_UDP_TYPE          17
 #define ADF_NBUF_TRAC_ICMPV6_TYPE       0x3a
 #define ADF_NBUF_TRAC_WAI_ETH_TYPE      0x88b4
+
+#define ADF_NBUF_TRAC_TCP_FLAGS_OFFSET       47
+#define ADF_NBUF_TRAC_TCP_ACK_OFFSET         42
+#define ADF_NBUF_TRAC_TCP_HEADER_LEN_OFFSET  46
+#define ADF_NBUF_TRAC_TCP_ACK_MASK           0x10
+#define ADF_NBUF_TRAC_TCP_SPORT_OFFSET       34
+#define ADF_NBUF_TRAC_TCP_DPORT_OFFSET       36
+
 
 /* EAPOL Related MASK */
 #define EAPOL_PACKET_TYPE_OFFSET        15
@@ -121,6 +130,8 @@
  * @rate: Rate in terms 500Kbps
  * @ant_signal_db: Rx packet RSSI
  * @nr_ant: Number of Antennas used for streaming
+ * @mcs_info: Parsed ht sig info
+ * @vht_info: Parsed vht sig info
  */
 
 struct mon_rx_status {
@@ -131,6 +142,36 @@ struct mon_rx_status {
 	uint8_t  rate;
 	uint8_t  ant_signal_db;
 	uint8_t  nr_ant;
+	struct mon_rx_mcs_info {
+		uint8_t  valid;
+		uint32_t mcs: 7,
+			 bw: 1,
+			 smoothing: 1,
+			 not_sounding: 1,
+			 aggregation: 1,
+			 stbc: 2,
+			 fec: 1,
+			 sgi: 1,
+			 ness: 2,
+			 reserved: 15;
+	} mcs_info;
+
+	struct mon_rx_vht_info {
+		uint8_t  valid;
+		uint32_t bw: 2,
+			 stbc: 1,
+			 gid: 6,
+			 nss: 3,
+			 paid: 9,
+			 txps_forbidden: 1,
+			 sgi: 1,
+			 sgi_disambiguation: 1,
+			 coding: 1,
+			 ldpc_extra_symbol: 1,
+			 mcs: 4,
+			 beamformed: 1,
+			 reserved: 1;
+	} vht_info;
 };
 
 /* DHCP Related Mask */
@@ -178,17 +219,65 @@ struct mon_rx_status {
 #define ICMPV6_SUBTYPE_OFFSET         54
 #define ICMPV6_REQUEST                0x80
 #define ICMPV6_RESPONSE               0x81
+#define ICMPV6_RS                     0x85
+#define ICMPV6_RA                     0x86
 #define ICMPV6_NS                     0x87
 #define ICMPV6_NA                     0x88
 #define ADF_NBUF_IPA_CHECK_MASK       0x80000000
 
+/**
+ * adf_proto_type - protocol type
+ * @ADF_PROTO_TYPE_DHCP - DHCP
+ * @ADF_PROTO_TYPE_EAPOL - EAPOL
+ * @ADF_PROTO_TYPE_ARP - ARP
+ * @ADF_PROTO_TYPE_MGMT - MGMT
+ * @ADF_PROTO_TYPE_EVENT - EVENT
+ */
 enum adf_proto_type {
 	ADF_PROTO_TYPE_DHCP = 0,
 	ADF_PROTO_TYPE_EAPOL,
 	ADF_PROTO_TYPE_ARP,
+	ADF_PROTO_TYPE_MGMT,
+	ADF_PROTO_TYPE_EVENT,
 	ADF_PROTO_TYPE_MAX
 };
 
+/**
+ * adf_proto_subtype - subtype of packet
+ * @ADF_PROTO_EAPOL_M1 - EAPOL 1/4
+ * @ADF_PROTO_EAPOL_M2 - EAPOL 2/4
+ * @ADF_PROTO_EAPOL_M3 - EAPOL 3/4
+ * @ADF_PROTO_EAPOL_M4 - EAPOL 4/4
+ * @ADF_PROTO_DHCP_DISCOVER - discover
+ * @ADF_PROTO_DHCP_REQUEST - request
+ * @ADF_PROTO_DHCP_OFFER - offer
+ * @ADF_PROTO_DHCP_ACK - ACK
+ * @ADF_PROTO_DHCP_NACK - NACK
+ * @ADF_PROTO_DHCP_RELEASE - release
+ * @ADF_PROTO_DHCP_INFORM - inform
+ * @ADF_PROTO_DHCP_DECLINE - decline
+ * @ADF_PROTO_ARP_REQ - arp request
+ * @ADF_PROTO_ARP_RES - arp response
+ * @ADF_PROTO_ICMP_REQ - icmp request
+ * @ADF_PROTO_ICMP_RES - icmp response
+ * @ADF_PROTO_ICMPV6_REQ - icmpv6 request
+ * @ADF_PROTO_ICMPV6_RES - icmpv6 response
+ * @ADF_PROTO_ICMPV6_RS - icmpv6 rs packet
+ * @ADF_PROTO_ICMPV6_RA - icmpv6 ra packet
+ * @ADF_PROTO_ICMPV6_NS - icmpv6 ns packet
+ * @ADF_PROTO_ICMPV6_NA - icmpv6 na packet
+ * @ADF_PROTO_IPV4_UDP - ipv4 udp
+ * @ADF_PROTO_IPV4_TCP - ipv4 tcp
+ * @ADF_PROTO_IPV6_UDP - ipv6 udp
+ * @ADF_PROTO_IPV6_TCP - ipv6 tcp
+ * @ADF_PROTO_MGMT_ASSOC -assoc
+ * @ADF_PROTO_MGMT_DISASSOC - disassoc
+ * @ADF_PROTO_MGMT_AUTH - auth
+ * @ADF_PROTO_MGMT_DEAUTH - deauth
+ * @ADF_ROAM_SYNCH - roam synch indication from fw
+ * @ADF_ROAM_COMPLETE - roam complete cmd to fw
+ * @ADF_ROAM_EVENTID - roam eventid from fw
+ */
 enum adf_proto_subtype {
 	ADF_PROTO_INVALID = 0,
 	ADF_PROTO_EAPOL_M1,
@@ -205,17 +294,25 @@ enum adf_proto_subtype {
 	ADF_PROTO_DHCP_DECLINE,
 	ADF_PROTO_ARP_REQ,
 	ADF_PROTO_ARP_RES,
-	ADF_PROTO_ARP_SUBTYPE,
 	ADF_PROTO_ICMP_REQ,
 	ADF_PROTO_ICMP_RES,
 	ADF_PROTO_ICMPV6_REQ,
 	ADF_PROTO_ICMPV6_RES,
+	ADF_PROTO_ICMPV6_RS,
+	ADF_PROTO_ICMPV6_RA,
 	ADF_PROTO_ICMPV6_NS,
 	ADF_PROTO_ICMPV6_NA,
 	ADF_PROTO_IPV4_UDP,
 	ADF_PROTO_IPV4_TCP,
 	ADF_PROTO_IPV6_UDP,
 	ADF_PROTO_IPV6_TCP,
+	ADF_PROTO_MGMT_ASSOC,
+	ADF_PROTO_MGMT_DISASSOC,
+	ADF_PROTO_MGMT_AUTH,
+	ADF_PROTO_MGMT_DEAUTH,
+	ADF_ROAM_SYNCH,
+	ADF_ROAM_COMPLETE,
+	ADF_ROAM_EVENTID,
 	ADF_PROTO_SUBTYPE_MAX
 };
 
@@ -411,7 +508,49 @@ adf_nbuf_dmamap_info(adf_os_dma_map_t bmap, adf_os_dmamap_info_t *sg)
     __adf_nbuf_dmamap_info(bmap, sg);
 }
 
+#ifdef MEMORY_DEBUG
+void adf_net_buf_debug_init(void);
+void adf_net_buf_debug_exit(void);
+void adf_net_buf_debug_clean(void);
+void adf_net_buf_debug_add_node(adf_nbuf_t net_buf, size_t size,
+			uint8_t *file_name, uint32_t line_num);
+void adf_net_buf_debug_delete_node(adf_nbuf_t net_buf);
+void adf_net_buf_debug_release_skb(adf_nbuf_t net_buf);
 
+/* nbuf allocation routines */
+
+#define adf_nbuf_alloc(d, s, r, a, p)			\
+	adf_nbuf_alloc_debug(d, s, r, a, p, __FILE__, __LINE__)
+static inline adf_nbuf_t
+adf_nbuf_alloc_debug(adf_os_device_t osdev, adf_os_size_t size, int reserve,
+		int align, int prio, uint8_t *file_name,
+		uint32_t line_num)
+{
+	adf_nbuf_t net_buf;
+	net_buf = __adf_nbuf_alloc(osdev, size, reserve, align, prio);
+
+	/* Store SKB in internal ADF tracking table */
+	if (adf_os_likely(net_buf))
+		adf_net_buf_debug_add_node(net_buf, size, file_name, line_num);
+
+	return net_buf;
+}
+
+static inline void adf_nbuf_free(adf_nbuf_t net_buf)
+{
+	/* Remove SKB from internal ADF tracking table */
+	if (adf_os_likely(net_buf))
+		adf_net_buf_debug_delete_node(net_buf);
+
+	__adf_nbuf_free(net_buf);
+}
+
+#else
+
+static inline void adf_net_buf_debug_release_skb(adf_nbuf_t net_buf)
+{
+	return;
+}
 
 /*
  * nbuf allocation rouines
@@ -480,6 +619,8 @@ adf_nbuf_free(adf_nbuf_t buf)
 {
     __adf_nbuf_free(buf);
 }
+
+#endif
 
 /**
  * @brief Free adf_nbuf
@@ -1114,6 +1255,20 @@ adf_nbuf_append_ext_list(adf_nbuf_t head_buf, adf_nbuf_t ext_list,
 }
 
 /**
+ * adf_nbuf_get_ext_list() - Get the link to extended nbuf list.
+ * @head_buf: Network buf holding head segment (single)
+ *
+ * This ext_list is populated when we have Jumbo packet, for example in case of
+ * monitor mode amsdu packet reception, and are stiched using frags_list.
+ *
+ * Return: Network buf list holding linked extensions from head buf.
+ */
+static inline adf_nbuf_t adf_nbuf_get_ext_list(adf_nbuf_t head_buf)
+{
+	return (adf_nbuf_t)__adf_nbuf_get_ext_list(head_buf);
+}
+
+/**
  * @brief Gets the tx checksumming to be performed on this buf
  *
  * @param[in]  buf       buffer
@@ -1312,6 +1467,27 @@ adf_nbuf_set_fwd_flag(adf_nbuf_t buf, uint8_t flag)
 {
    __adf_nbuf_set_fwd_flag(buf, flag);
 }
+
+/**
+ * adf_nbuf_is_ipa_nbuf() - Check if frame owner is IPA
+ * @skb: Pointer to skb
+ *
+ * Returns: TRUE if the owner is IPA else FALSE
+ *
+ */
+#if (defined(QCA_MDM_DEVICE) && defined(IPA_OFFLOAD))
+static inline bool
+adf_nbuf_is_ipa_nbuf(adf_nbuf_t buf)
+{
+    return (NBUF_OWNER_ID(buf) == IPA_NBUF_OWNER_ID);
+}
+#else
+static inline bool
+adf_nbuf_is_ipa_nbuf(adf_nbuf_t buf)
+{
+    return false;
+}
+#endif /* QCA_MDM_DEVICE && IPA_OFFLOAD*/
 
 /**
  * @brief This function registers protocol trace callback

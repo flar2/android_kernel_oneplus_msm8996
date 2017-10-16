@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -39,8 +39,7 @@
 #include "palTypes.h"
 #include "wniApi.h"
 #include "wlan_qct_wda.h"
-
-#include "wniCfgSta.h"
+#include "wni_cfg.h"
 #include "cfgApi.h"
 #include "sirCommon.h"
 #include "utilsApi.h"
@@ -75,6 +74,7 @@
 #include "vos_memory.h"
 #include "nan_datapath.h"
 
+#define CHECK_BIT(value, mask)    ((value) & (1 << (mask)))
 void limLogSessionStates(tpAniSirGlobal pMac);
 
 /** -------------------------------------------------------------
@@ -243,14 +243,14 @@ __limExtScanForwardBcnProbeRsp(tpAniSirGlobal pmac, uint8_t *rx_pkt_info,
 	tSirMsgQ                     mmh_msg;
 	tpSirMacMgmtHdr              hdr;
 
-	result = vos_mem_malloc(sizeof(*result) + ie_len);
+	result = vos_mem_malloc(sizeof(*result) + ie_len + ie_len);
 	if (NULL == result) {
 		limLog(pmac, LOGE, FL("Memory allocation failed"));
 		return;
 	}
 	hdr = WDA_GET_RX_MAC_HEADER(rx_pkt_info);
 	body = WDA_GET_RX_MPDU_DATA(rx_pkt_info);
-	vos_mem_zero(result, sizeof(*result) + ie_len);
+	vos_mem_zero(result, sizeof(*result) + ie_len + ie_len);
 
 	/* Received frame does not have request id, hence set 0 */
 	result->requestId = 0;
@@ -273,6 +273,15 @@ __limExtScanForwardBcnProbeRsp(tpAniSirGlobal pmac, uint8_t *rx_pkt_info,
 	/* Copy IE fields */
 	vos_mem_copy((uint8_t *) &result->ap.ieData,
 			body + SIR_MAC_B_PR_SSID_OFFSET, ie_len);
+
+	/* bss_description points to ap.ieData as ap.ieData is flexible arrary
+	 * member.
+	 * Fill result->bss_description by leaving ie_len bytes after ap.ieData
+	 * manually.
+	 */
+	limCollectBssDescription(pmac,
+		(tSirBssDescription *)((uint8_t *)&result->bss_description +
+		ie_len), frame, rx_pkt_info, eANI_BOOLEAN_FALSE);
 
 	mmh_msg.type = msg_type;
 	mmh_msg.bodyptr = result;
@@ -369,10 +378,10 @@ __limHandleBeacon(tpAniSirGlobal pMac, tpSirMsgQ pMsg, tpPESession psessionEntry
     {
         schBeaconProcess(pMac, pRxPacketInfo, psessionEntry);
     }
-     else
+    else
         limProcessBeaconFrame(pMac, pRxPacketInfo, psessionEntry);
 
-        return;
+    return;
 }
 
 
@@ -662,7 +671,8 @@ limCheckMgmtRegisteredFrames(tpAniSirGlobal pMac, tANI_U8 *pBd,
         limSendSmeMgmtFrameInd( pMac, pHdr->fc.subType, (tANI_U8*)pHdr,
                      WDA_GET_RX_PAYLOAD_LEN(pBd) + sizeof(tSirMacMgmtHdr),
                      pLimMgmtRegistration->sessionId,
-                     WDA_GET_RX_CH(pBd), psessionEntry, 0);
+                     WDA_GET_RX_CH(pBd), psessionEntry,
+                     WDA_GET_RX_RSSI_NORMALIZED(pBd));
 
         if ( (type == SIR_MAC_MGMT_FRAME) && (fc.type == SIR_MAC_MGMT_FRAME)
               && (subType == SIR_MAC_MGMT_RESERVED15) )
@@ -735,13 +745,15 @@ limHandle80211Frames(tpAniSirGlobal pMac, tpSirMsgQ limMsg, tANI_U8 *pDeferMsg)
             (fc.subType != SIR_MAC_MGMT_BEACON))
     {
          limLog(pMac, LOG1, FL("RX MGMT - Type %hu, SubType %hu, "
-                "BSSID: "MAC_ADDRESS_STR " RSSI %d Seq.no %d"),
+                "BSSID: "MAC_ADDRESS_STR " RSSI %d Seq.no %d"
+		" Source-Addr: "MAC_ADDRESS_STR),
                 fc.type, fc.subType, MAC_ADDR_ARRAY(pHdr->bssId),
                 (uint8_t)abs(
                 (tANI_S8)WDA_GET_RX_RSSI_NORMALIZED(pRxPacketInfo)),
                 ((pHdr->seqControl.seqNumHi << 4) |
-                               (pHdr->seqControl.seqNumLo)));
-     }
+                               (pHdr->seqControl.seqNumLo)),
+                MAC_ADDR_ARRAY(pHdr->sa));
+    }
 
 #ifdef FEATURE_WLAN_EXTSCAN
     if (WMA_IS_EXTSCAN_SCAN_SRC(pRxPacketInfo) ||
@@ -811,7 +823,10 @@ limHandle80211Frames(tpAniSirGlobal pMac, tpSirMsgQ limMsg, tANI_U8 *pDeferMsg)
         if((fc.subType != SIR_MAC_MGMT_PROBE_RSP )&&
             (fc.subType != SIR_MAC_MGMT_BEACON)&&
             (fc.subType != SIR_MAC_MGMT_PROBE_REQ)
-            && (fc.subType != SIR_MAC_MGMT_ACTION ) //Public action frame can be received from non-associated stations.
+            /* TA for 11p DSRC */
+            && (fc.subType != SIR_MAC_MGMT_TIME_ADVERT)
+            /* Public action frame can be received from non-associated STAs */
+            && (fc.subType != SIR_MAC_MGMT_ACTION )
           )
         {
 
@@ -929,6 +944,16 @@ limHandle80211Frames(tpAniSirGlobal pMac, tpSirMsgQ limMsg, tANI_U8 *pDeferMsg)
 
                 case SIR_MAC_MGMT_DEAUTH:
                     limProcessDeauthFrame(pMac, pRxPacketInfo,psessionEntry);
+                    break;
+
+                case SIR_MAC_MGMT_TIME_ADVERT:
+                {
+                    tANI_U32 frameLen = WDA_GET_RX_PAYLOAD_LEN(pRxPacketInfo);
+                    limSendSmeMgmtFrameInd(pMac, SIR_MAC_MGMT_TIME_ADVERT,
+                            (tANI_U8*)pHdr, frameLen + sizeof(tSirMacMgmtHdr),
+                            0, WDA_GET_RX_CH(pRxPacketInfo), NULL,
+                            WDA_GET_RX_RSSI_RAW(pRxPacketInfo));
+                }
                     break;
 
                 case SIR_MAC_MGMT_ACTION:
@@ -1372,12 +1397,10 @@ limProcessMessages(tpAniSirGlobal pMac, tpSirMsgQ  limMsg)
             break;
         case eWNI_SME_SCAN_ABORT_IND:
           {
-            tSirMbMsg *pMsg = limMsg->bodyptr;
-            tANI_U8 sessionId;
+            tSirSmeScanAbortReq *pMsg = (tSirSmeScanAbortReq *)limMsg->bodyptr;
             if (pMsg)
             {
-               sessionId = (tANI_U8) pMsg->data[0];
-               limProcessAbortScanInd(pMac, sessionId);
+               limProcessAbortScanInd(pMac, pMsg->sessionId);
                vos_mem_free((v_VOID_t *)limMsg->bodyptr);
                limMsg->bodyptr = NULL;
             }
@@ -2054,6 +2077,8 @@ limProcessMessages(tpAniSirGlobal pMac, tpSirMsgQ  limMsg)
         {
             tpPESession     psessionEntry;
             tANI_U8         sessionId;
+            tDphHashNode   *sta_ds = NULL;
+            int i, aid;
             tTdlsLinkEstablishParams *pTdlsLinkEstablishParams;
             pTdlsLinkEstablishParams = (tTdlsLinkEstablishParams*) limMsg->bodyptr;
 
@@ -2074,11 +2099,33 @@ limProcessMessages(tpAniSirGlobal pMac, tpSirMsgQ  limMsg)
             }
             else
             {
-                limSendSmeTdlsLinkEstablishReqRsp(pMac,
-                                                  psessionEntry->smeSessionId,
-                                                  NULL,
-                                                  NULL,
-                                                  pTdlsLinkEstablishParams->status) ;
+                for (i = 0;
+                     i < sizeof(psessionEntry->peerAIDBitmap)
+                                           / sizeof(uint32_t); i++) {
+                    for (aid = 0; aid < (sizeof(tANI_U32) << 3); aid++) {
+                        if (CHECK_BIT(psessionEntry->peerAIDBitmap[i], aid)) {
+                            sta_ds = dphGetHashEntry(pMac,
+                                           (aid + i*(sizeof(tANI_U32) << 3)),
+                                            &psessionEntry->dph.dphHashTable);
+                              if ((sta_ds) &&
+                                   (pTdlsLinkEstablishParams->staIdx ==
+                                                       sta_ds->staIndex))
+                                  goto send_link_resp;
+                        }
+                    }
+                }
+send_link_resp:
+                if (sta_ds)
+                    limSendSmeTdlsLinkEstablishReqRsp(pMac,
+                                              psessionEntry->smeSessionId,
+                                              sta_ds->staAddr,
+                                              sta_ds,
+                                              pTdlsLinkEstablishParams->status);
+                else
+                    limSendSmeTdlsLinkEstablishReqRsp(pMac,
+                                              psessionEntry->smeSessionId,
+                                              NULL, NULL,
+                                              pTdlsLinkEstablishParams->status);
             }
             vos_mem_free((v_VOID_t *)(limMsg->bodyptr));
             limMsg->bodyptr = NULL;
@@ -2088,6 +2135,10 @@ limProcessMessages(tpAniSirGlobal pMac, tpSirMsgQ  limMsg)
 
     case WDA_RX_SCAN_EVENT:
         limProcessRxScanEvent(pMac, limMsg->bodyptr);
+        break;
+
+    case WDA_RX_CHN_STATUS_EVENT:
+        lim_process_rx_channel_status_event(pMac, limMsg->bodyptr);
         break;
 
     case WDA_IBSS_PEER_INACTIVITY_IND:

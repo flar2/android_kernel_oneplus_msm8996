@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -38,7 +38,7 @@
  */
 
 #include "aniGlobal.h"
-#include "wniCfgSta.h"
+#include "wni_cfg.h"
 #include "cfgApi.h"
 
 
@@ -281,7 +281,7 @@ limTriggerSTAdeletion(tpAniSirGlobal pMac, tpDphHashNode pStaDs, tpPESession pse
         pStaDs->sta_deletion_in_progress) {
         /* Already in the process of deleting context for the peer */
         limLog(pMac, LOG1,
-            FL("Deletion is in progress (%d) for peer:%p in mlmState %d"),
+            FL("Deletion is in progress (%d) for peer:%pK in mlmState %d"),
             pStaDs->sta_deletion_in_progress, pStaDs->staAddr,
             pStaDs->mlmStaContext.mlmState);
         return;
@@ -467,11 +467,19 @@ void limHandleHeartBeatFailure(tpAniSirGlobal pMac,tpPESession psessionEntry)
     {
         if (!pMac->sys.gSysEnableLinkMonitorMode)
             return;
+        /* Ignore HB if channel switch is in progress */
+        if (psessionEntry->gLimSpecMgmt.dot11hChanSwState ==
+                          eLIM_11H_CHANSW_RUNNING) {
+           limLog(pMac, LOGE,
+               FL("Ignore Heartbeat failure as Channel switch is in progress"));
+           pMac->pmm.inMissedBeaconScenario = false;
+           return;
+        }
 
         /**
          * Beacon frame not received within heartbeat timeout.
          */
-        PELOGW(limLog(pMac, LOGW, FL("Heartbeat Failure"));)
+        limLog(pMac, LOGW, FL("Heartbeat Failure"));
         pMac->lim.gLimHBfailureCntInLinkEstState++;
 
         /**

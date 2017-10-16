@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -48,7 +48,6 @@
 #include <linux/wireless.h>
 #include <macTrace.h>
 #include <wlan_hdd_includes.h>
-#include <wlan_btc_svc.h>
 #include <wlan_nlink_common.h>
 #include <vos_api.h>
 #include <net/arp.h>
@@ -244,6 +243,8 @@ static const hdd_freq_chan_map_t freq_chan_map[] = { {2412, 1}, {2417, 2},
 #define WE_CLEAR_STATS                        86
 #define WE_SET_CHANNEL                        87
 
+#define WE_SET_MODULATED_DTIM                 88
+
 
 /* Private ioctls and their sub-ioctls */
 #define WLAN_PRIV_SET_NONE_GET_INT    (SIOCIWFIRSTPRIV + 1)
@@ -413,7 +414,8 @@ static const hdd_freq_chan_map_t freq_chan_map[] = { {2412, 1}, {2417, 2},
 #define WE_GET_TSF      1
 
 /* (SIOCIWFIRSTPRIV + 17) is currently unused */
-/* (SIOCIWFIRSTPRIV + 19) is currently unused */
+
+#define WLAN_GET_ISOLATION                (SIOCIWFIRSTPRIV + 19)
 
 #ifdef WLAN_FEATURE_VOWIFI_11R
 #define WLAN_PRIV_SET_FTIES             (SIOCIWFIRSTPRIV + 20)
@@ -581,6 +583,11 @@ static const struct qwlan_hw qwlan_hw_list[] = {
         .id = QCA9379_REV1_VERSION,
         .subid = 0xC,
         .name = "QCA9379_REV1",
+    },
+    {
+        .id = QCA9379_REV1_VERSION,
+        .subid = 0xD,
+        .name = "QCA9379_REV1_1",
     }
 };
 
@@ -664,7 +671,11 @@ int hdd_priv_get_data(struct iw_point *p_priv_data,
    }
 
 #ifdef CONFIG_COMPAT
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)) && defined(CONFIG_X86_64)
+   if (in_compat_syscall()) {
+#else
    if (is_compat_task()) {
+#endif
       struct compat_iw_point *p_compat_priv_data;
 
       /* Compat task: typecast to compat structure and copy the members. */
@@ -1167,14 +1178,14 @@ static void hdd_GetRssiCB( v_S7_t rssi, tANI_U32 staId, void *pContext )
 
    if (ioctl_debug)
    {
-      pr_info("%s: rssi [%d] STA [%d] pContext [%p]\n",
+      pr_info("%s: rssi [%d] STA [%d] pContext [%pK]\n",
               __func__, (int)rssi, (int)staId, pContext);
    }
 
    if (NULL == pContext)
    {
       hddLog(VOS_TRACE_LEVEL_ERROR,
-             "%s: Bad param, pContext [%p]",
+             "%s: Bad param, pContext [%pK]",
              __func__, pContext);
       return;
    }
@@ -1188,16 +1199,16 @@ static void hdd_GetRssiCB( v_S7_t rssi, tANI_U32 staId, void *pContext )
       serialize these actions */
    spin_lock(&hdd_context_lock);
 
-   if ((NULL == pAdapter) || (RSSI_CONTEXT_MAGIC != pStatsContext->magic))
+   if ((NULL == pAdapter) || (PEER_INFO_CONTEXT_MAGIC != pStatsContext->magic))
    {
       /* the caller presumably timed out so there is nothing we can do */
       spin_unlock(&hdd_context_lock);
       hddLog(VOS_TRACE_LEVEL_WARN,
-             "%s: Invalid context, pAdapter [%p] magic [%08x]",
+             "%s: Invalid context, pAdapter [%pK] magic [%08x]",
               __func__, pAdapter, pStatsContext->magic);
       if (ioctl_debug)
       {
-         pr_info("%s: Invalid context, pAdapter [%p] magic [%08x]\n",
+         pr_info("%s: Invalid context, pAdapter [%pK] magic [%08x]\n",
                  __func__, pAdapter, pStatsContext->magic);
       }
       return;
@@ -1227,14 +1238,14 @@ static void hdd_GetSnrCB(tANI_S8 snr, tANI_U32 staId, void *pContext)
 
    if (ioctl_debug)
    {
-      pr_info("%s: snr [%d] STA [%d] pContext [%p]\n",
+      pr_info("%s: snr [%d] STA [%d] pContext [%pK]\n",
               __func__, (int)snr, (int)staId, pContext);
    }
 
    if (NULL == pContext)
    {
       hddLog(VOS_TRACE_LEVEL_ERROR,
-             "%s: Bad param, pContext [%p]",
+             "%s: Bad param, pContext [%pK]",
              __func__, pContext);
       return;
    }
@@ -1253,11 +1264,11 @@ static void hdd_GetSnrCB(tANI_S8 snr, tANI_U32 staId, void *pContext)
       /* the caller presumably timed out so there is nothing we can do */
       spin_unlock(&hdd_context_lock);
       hddLog(VOS_TRACE_LEVEL_WARN,
-             "%s: Invalid context, pAdapter [%p] magic [%08x]",
+             "%s: Invalid context, pAdapter [%pK] magic [%08x]",
               __func__, pAdapter, pStatsContext->magic);
       if (ioctl_debug)
       {
-         pr_info("%s: Invalid context, pAdapter [%p] magic [%08x]\n",
+         pr_info("%s: Invalid context, pAdapter [%pK] magic [%08x]\n",
                  __func__, pAdapter, pStatsContext->magic);
       }
       return;
@@ -1320,7 +1331,7 @@ VOS_STATUS wlan_hdd_get_rssi(hdd_adapter_t *pAdapter, v_S7_t *rssi_value)
 
    init_completion(&context.completion);
    context.pAdapter = pAdapter;
-   context.magic = RSSI_CONTEXT_MAGIC;
+   context.magic = PEER_INFO_CONTEXT_MAGIC;
 
    hstatus = sme_GetRssi(pHddCtx->hHal, hdd_GetRssiCB,
                          pHddStaCtx->conn_info.staId[ 0 ],
@@ -1360,6 +1371,7 @@ VOS_STATUS wlan_hdd_get_rssi(hdd_adapter_t *pAdapter, v_S7_t *rssi_value)
    spin_unlock(&hdd_context_lock);
 
    *rssi_value = pAdapter->rssi;
+   hddLog(LOG1, FL("RSSI = %d"), *rssi_value);
 
    return VOS_STATUS_SUCCESS;
 }
@@ -1573,6 +1585,8 @@ void hdd_clearRoamProfileIe( hdd_adapter_t *pAdapter)
    pWextState->roamProfile.AuthType.numEntries = 1;
    pWextState->roamProfile.AuthType.authType[0] = eCSR_AUTH_TYPE_OPEN_SYSTEM;
 
+   vos_mem_zero((pWextState->roamProfile.bssid_hint), VOS_MAC_ADDR_SIZE);
+
 #ifdef WLAN_FEATURE_11W
    pWextState->roamProfile.MFPEnabled = eANI_BOOLEAN_FALSE;
    pWextState->roamProfile.MFPRequired = 0;
@@ -1582,12 +1596,8 @@ void hdd_clearRoamProfileIe( hdd_adapter_t *pAdapter)
    pWextState->authKeyMgmt = 0;
 
    for (i=0; i < CSR_MAX_NUM_KEY; i++)
-   {
-      if (pWextState->roamProfile.Keys.KeyMaterial[i])
-      {
-         pWextState->roamProfile.Keys.KeyLength[i] = 0;
-      }
-   }
+       pWextState->roamProfile.Keys.KeyLength[i] = 0;
+
 #ifdef FEATURE_WLAN_WAPI
    pAdapter->wapi_info.wapiAuthMode = WAPI_AUTH_MODE_OPEN;
    pAdapter->wapi_info.nWapiMode = 0;
@@ -3022,14 +3032,10 @@ static int __iw_get_encode(struct net_device *dev, struct iw_request_info *info,
 
     for(i=0; i < MAX_WEP_KEYS; i++)
     {
-        if(pRoamProfile->Keys.KeyMaterial[i] == NULL)
-        {
+        if (pRoamProfile->Keys.KeyLength[i] == 0)
             continue;
-        }
         else
-        {
             break;
-        }
     }
 
     if(MAX_WEP_KEYS == i)
@@ -3592,7 +3598,7 @@ static void iw_power_offload_callback_fn(void *context, tANI_U32 session_id,
 
 	if (NULL == context) {
 		hddLog(VOS_TRACE_LEVEL_ERROR,
-			FL("Bad param, context [%p]"),
+			FL("Bad param, context [%pK]"),
 			context);
 		return;
 	}
@@ -3639,7 +3645,7 @@ static void iw_power_callback_fn (void *pContext, eHalStatus status)
    if (NULL == pContext)
    {
        hddLog(VOS_TRACE_LEVEL_ERROR,
-            "%s: Bad param, pContext [%p]",
+            "%s: Bad param, pContext [%pK]",
               __func__, pContext);
        return;
    }
@@ -3705,14 +3711,14 @@ void hdd_GetClassA_statisticsCB(void *pStats, void *pContext)
 
    if (ioctl_debug)
    {
-      pr_info("%s: pStats [%p] pContext [%p]\n",
+      pr_info("%s: pStats [%pK] pContext [%pK]\n",
               __func__, pStats, pContext);
    }
 
    if ((NULL == pStats) || (NULL == pContext))
    {
       hddLog(VOS_TRACE_LEVEL_ERROR,
-             "%s: Bad param, pStats [%p] pContext [%p]",
+             "%s: Bad param, pStats [%pK] pContext [%pK]",
               __func__, pStats, pContext);
       return;
    }
@@ -3732,11 +3738,11 @@ void hdd_GetClassA_statisticsCB(void *pStats, void *pContext)
       /* the caller presumably timed out so there is nothing we can do */
       spin_unlock(&hdd_context_lock);
       hddLog(VOS_TRACE_LEVEL_WARN,
-             "%s: Invalid context, pAdapter [%p] magic [%08x]",
+             "%s: Invalid context, pAdapter [%pK] magic [%08x]",
               __func__, pAdapter, pStatsContext->magic);
       if (ioctl_debug)
       {
-         pr_info("%s: Invalid context, pAdapter [%p] magic [%08x]\n",
+         pr_info("%s: Invalid context, pAdapter [%pK] magic [%08x]\n",
                  __func__, pAdapter, pStatsContext->magic);
       }
       return;
@@ -3765,7 +3771,7 @@ void hdd_GetLink_SpeedCB(tSirLinkSpeedInfo *pLinkSpeed, void *pContext)
    if ((NULL == pLinkSpeed) || (NULL == pContext))
    {
       hddLog(VOS_TRACE_LEVEL_ERROR,
-             "%s: Bad param, pLinkSpeed [%p] pContext [%p]",
+             "%s: Bad param, pLinkSpeed [%pK] pContext [%pK]",
              __func__, pLinkSpeed, pContext);
       return;
    }
@@ -3783,11 +3789,11 @@ void hdd_GetLink_SpeedCB(tSirLinkSpeedInfo *pLinkSpeed, void *pContext)
        /* the caller presumably timed out so there is nothing we can do */
       spin_unlock(&hdd_context_lock);
       hddLog(VOS_TRACE_LEVEL_WARN,
-             "%s: Invalid context, pAdapter [%p] magic [%08x]",
+             "%s: Invalid context, pAdapter [%pK] magic [%08x]",
               __func__, pAdapter, pLinkSpeedContext->magic);
       if (ioctl_debug)
       {
-         pr_info("%s: Invalid context, pAdapter [%p] magic [%08x]\n",
+         pr_info("%s: Invalid context, pAdapter [%pK] magic [%08x]\n",
                  __func__, pAdapter, pLinkSpeedContext->magic);
       }
       return;
@@ -3887,14 +3893,14 @@ static void hdd_get_station_statisticsCB(void *pStats, void *pContext)
 
    if (ioctl_debug)
    {
-      pr_info("%s: pStats [%p] pContext [%p]\n",
+      pr_info("%s: pStats [%pK] pContext [%pK]\n",
               __func__, pStats, pContext);
    }
 
    if ((NULL == pStats) || (NULL == pContext))
    {
       hddLog(VOS_TRACE_LEVEL_ERROR,
-             "%s: Bad param, pStats [%p] pContext [%p]",
+             "%s: Bad param, pStats [%pK] pContext [%pK]",
              __func__, pStats, pContext);
       return;
    }
@@ -3916,11 +3922,11 @@ static void hdd_get_station_statisticsCB(void *pStats, void *pContext)
       /* the caller presumably timed out so there is nothing we can do */
       spin_unlock(&hdd_context_lock);
       hddLog(VOS_TRACE_LEVEL_WARN,
-             "%s: Invalid context, pAdapter [%p] magic [%08x]",
+             "%s: Invalid context, pAdapter [%pK] magic [%08x]",
              __func__, pAdapter, pStatsContext->magic);
       if (ioctl_debug)
       {
-         pr_info("%s: Invalid context, pAdapter [%p] magic [%08x]\n",
+         pr_info("%s: Invalid context, pAdapter [%pK] magic [%08x]\n",
                  __func__, pAdapter, pStatsContext->magic);
       }
       return;
@@ -4087,6 +4093,167 @@ static int iw_get_linkspeed_priv(struct net_device *dev,
 	vos_ssr_unprotect(__func__);
 
 	return ret;
+}
+
+void hdd_get_isolation_cb(struct sir_isolation_resp *isolation,
+        void *context)
+{
+    struct statsContext *isolation_context;
+    int buf = 0;
+    int length = 0;
+    char *isolation_output;
+    union iwreq_data *wrqu;
+
+    if ((NULL == isolation) || (NULL == context)) {
+
+        hddLog(VOS_TRACE_LEVEL_ERROR,
+                "%s: Bad param, %s",
+                __func__,
+				isolation ? "context is NULL" : "isolation is NULL");
+        return;
+    }
+
+    spin_lock(&hdd_context_lock);
+
+    isolation_context = context;
+    if (ISOLATION_CONTEXT_MAGIC !=
+            isolation_context->magic) {
+
+        /*
+         * the caller presumably timed out so there is nothing
+         * we can do
+         */
+        spin_unlock(&hdd_context_lock);
+        hddLog(VOS_TRACE_LEVEL_WARN,
+                "%s: Invalid context, magic [%08x]",
+                __func__,
+                isolation_context->magic);
+        return;
+    }
+
+    isolation_output = isolation_context->extra;
+    wrqu = isolation_context->wrqu;
+    isolation_context->magic = 0;
+
+    hddLog(LOG1, "%s: chain1 %d chain2 %d chain3 %d chain4 %d", __func__,
+            isolation->isolation_chain0, isolation->isolation_chain1,
+            isolation->isolation_chain2, isolation->isolation_chain3);
+
+    length = scnprintf((isolation_output), WE_MAX_STR_LEN, "\n");
+    buf = scnprintf
+        (
+         (isolation_output + length), WE_MAX_STR_LEN - length,
+         "isolation chain 0 : %d\n",
+         isolation->isolation_chain0
+        );
+    length += buf;
+    buf = scnprintf
+        (
+         (isolation_output + length), WE_MAX_STR_LEN - length,
+         "isolation chain 1 : %d\n",
+         isolation->isolation_chain1
+        );
+    length += buf;
+    buf = scnprintf
+        (
+         (isolation_output + length), WE_MAX_STR_LEN - length,
+         "isolation chain 2 : %d\n",
+         isolation->isolation_chain2
+        );
+    length += buf;
+    buf = scnprintf
+        (
+         (isolation_output + length), WE_MAX_STR_LEN - length,
+         "isolation chain 3 : %d\n",
+         isolation->isolation_chain3
+        );
+    length += buf;
+
+    wrqu->data.length = length + 1;
+
+    /* notify the caller */
+    complete(&isolation_context->completion);
+
+    /* serialization is complete */
+    spin_unlock(&hdd_context_lock);
+}
+
+static int wlan_hdd_get_isolation(hdd_adapter_t *adapter,
+        union iwreq_data *wrqu, char *extra)
+{
+    eHalStatus hstatus;
+    int ret;
+    struct statsContext context;
+
+    if (NULL == adapter) {
+        hddLog(VOS_TRACE_LEVEL_ERROR, "%s: pAdapter is NULL",
+                __func__);
+        return -EINVAL;
+    }
+
+    init_completion(&context.completion);
+    context.magic = ISOLATION_CONTEXT_MAGIC;
+    context.extra = extra;
+    context.wrqu = wrqu;
+
+    hstatus = sme_get_isolation(WLAN_HDD_GET_HAL_CTX(adapter),
+            &context,
+            hdd_get_isolation_cb);
+    if (eHAL_STATUS_SUCCESS != hstatus) {
+        hddLog(VOS_TRACE_LEVEL_ERROR,
+                "%s: Unable to retrieve isolation",
+                __func__);
+        ret = -EFAULT;
+    } else {
+        if (!wait_for_completion_timeout(&context.completion,
+                    msecs_to_jiffies(8000))) {
+            hddLog(VOS_TRACE_LEVEL_ERROR,
+                    "%s: SME timed out while retrieving isolation",
+                    __func__);
+            ret = -ETIMEDOUT;
+        } else
+            ret = 0;
+    }
+
+    spin_lock(&hdd_context_lock);
+    context.magic = 0;
+    spin_unlock(&hdd_context_lock);
+    return ret;
+}
+
+static int __iw_get_isolation(struct net_device *dev,
+        struct iw_request_info *info,
+        union iwreq_data *wrqu, char *extra)
+{
+    hdd_adapter_t *adapter = WLAN_HDD_GET_PRIV_PTR(dev);
+    hdd_context_t *hdd_ctx;
+    int ret;
+
+    hdd_ctx = WLAN_HDD_GET_CTX(adapter);
+    ret = wlan_hdd_validate_context(hdd_ctx);
+    if (0 != ret)
+        return ret;
+
+    ret = wlan_hdd_get_isolation(adapter, wrqu, extra);
+
+    if (ret < 0)
+        return ret;
+
+    /* a value is being successfully returned */
+    return 0;
+}
+
+static int iw_get_isolation(struct net_device *dev,
+        struct iw_request_info *info,
+        union iwreq_data *wrqu, char *extra)
+{
+    int ret;
+
+    vos_ssr_protect(__func__);
+    ret = __iw_get_isolation(dev, info, wrqu, extra);
+    vos_ssr_unprotect(__func__);
+
+    return ret;
 }
 
 VOS_STATUS  wlan_hdd_enter_bmps(hdd_adapter_t *pAdapter, int mode)
@@ -4259,6 +4426,9 @@ VOS_STATUS  wlan_hdd_set_powersave(hdd_adapter_t *pAdapter, int mode)
                    "enabled in the cfg");
        }
    }
+   spin_lock(&hdd_context_lock);
+   context.magic = 0;
+   spin_unlock(&hdd_context_lock);
    return VOS_STATUS_SUCCESS;
 }
 
@@ -4532,11 +4702,8 @@ static int __iw_set_encode(struct net_device *dev,struct iw_request_info *info,
        VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO, "****iwconfig wlan0 key off*****");
        if(!fKeyPresent) {
 
-          for(i=0;i < CSR_MAX_NUM_KEY; i++) {
-
-             if(pWextState->roamProfile.Keys.KeyMaterial[i])
+          for(i=0;i < CSR_MAX_NUM_KEY; i++)
                 pWextState->roamProfile.Keys.KeyLength[i] = 0;
-          }
        }
        pHddStaCtx->conn_info.authType =  eCSR_AUTH_TYPE_OPEN_SYSTEM;
        pWextState->wpaVersion = IW_AUTH_WPA_VERSION_DISABLED;
@@ -4713,7 +4880,7 @@ static int __iw_get_encodeext(struct net_device *dev,
 
     for(i=0; i < MAX_WEP_KEYS; i++)
     {
-        if(pRoamProfile->Keys.KeyMaterial[i] == NULL)
+        if (pRoamProfile->Keys.KeyLength[i] == 0)
         {
             continue;
         }
@@ -4836,8 +5003,8 @@ static int __iw_set_encodeext(struct net_device *dev,
        }
        else {
          /*Static wep, update the roam profile with the keys */
-          if(ext->key && (ext->key_len <= eCSR_SECURITY_WEP_KEYSIZE_MAX_BYTES) &&
-                                                               key_index < CSR_MAX_NUM_KEY) {
+          if ((ext->key_len <= eCSR_SECURITY_WEP_KEYSIZE_MAX_BYTES) &&
+                                               (key_index < CSR_MAX_NUM_KEY)) {
              vos_mem_copy(&pRoamProfile->Keys.KeyMaterial[key_index][0],ext->key,ext->key_len);
              pRoamProfile->Keys.KeyLength[key_index] = (v_U8_t)ext->key_len;
 
@@ -5708,7 +5875,7 @@ void hdd_GetTemperatureCB(int temperature, void *pContext)
         /* the caller presumably timed out so there is nothing we can do */
         spin_unlock(&hdd_context_lock);
         hddLog(VOS_TRACE_LEVEL_WARN,
-                FL("Invalid context, pAdapter [%p] magic [%08x]"),
+                FL("Invalid context, pAdapter [%pK] magic [%08x]"),
                 pAdapter, pTempContext->magic);
         return;
     }
@@ -6133,10 +6300,13 @@ static int __iw_setint_getnone(struct net_device *dev,
         }
         case WE_SET_MAX_TX_POWER_2_4:
         {
+           if (NULL == hHal)
+               return -EINVAL;
+
            hddLog(VOS_TRACE_LEVEL_INFO,
                   "%s: Setting maximum tx power %d dBm for 2.4 GHz band",
                   __func__, set_value);
-           if (sme_SetMaxTxPowerPerBand(eCSR_BAND_24, set_value) !=
+           if (sme_SetMaxTxPowerPerBand(eCSR_BAND_24, set_value, hHal) !=
                                         eHAL_STATUS_SUCCESS)
            {
               hddLog(VOS_TRACE_LEVEL_ERROR,
@@ -6149,10 +6319,13 @@ static int __iw_setint_getnone(struct net_device *dev,
         }
         case WE_SET_MAX_TX_POWER_5_0:
         {
+           if (NULL == hHal)
+               return -EINVAL;
+
            hddLog(VOS_TRACE_LEVEL_INFO,
                   "%s: Setting maximum tx power %d dBm for 5.0 GHz band",
                   __func__, set_value);
-           if (sme_SetMaxTxPowerPerBand(eCSR_BAND_5G, set_value) !=
+           if (sme_SetMaxTxPowerPerBand(eCSR_BAND_5G, set_value, hHal) !=
                                         eHAL_STATUS_SUCCESS)
            {
               hddLog(VOS_TRACE_LEVEL_ERROR,
@@ -6737,6 +6910,7 @@ static int __iw_setint_getnone(struct net_device *dev,
                  WLANTL_clear_datapath_stats(hdd_ctx->pvosContext, set_value);
                  break;
          }
+         break;
     }
 
     case WE_PPS_PAID_MATCH:
@@ -7085,6 +7259,19 @@ static int __iw_setint_getnone(struct net_device *dev,
                ret = -EINVAL;
           }
           break;
+        }
+        case WE_SET_MODULATED_DTIM:
+        {
+            if ((set_value < CFG_ENABLE_MODULATED_DTIM_MIN) ||
+                (set_value > CFG_ENABLE_MODULATED_DTIM_MAX)) {
+                hddLog(LOGE, FL("Invalid value %d in gEnableModuleDTIM"),
+                             set_value);
+                return -EINVAL;
+            } else {
+                ret = (WLAN_HDD_GET_CTX(pAdapter))->cfg_ini->
+                          enableModulatedDTIM = set_value;
+            }
+            break;
         }
         default:
         {
@@ -8430,7 +8617,11 @@ static int __iw_setnone_getnone(struct net_device *dev,
      * different between 32-bit and 64-bit user space, and the standard
      * compat support in the kernel does not handle this case.  so we
      * need to explicitly handle it here. */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)) && defined(CONFIG_X86_64)
+    if (in_compat_syscall()) {
+#else
     if (is_compat_task()) {
+#endif
         struct compat_iw_point *compat_iw_point =
             (struct compat_iw_point *) &wrqu->data;
         sub_cmd = compat_iw_point->flags;
@@ -8574,7 +8765,7 @@ void hdd_wmm_tx_snapshot(hdd_adapter_t *pAdapter)
     for ( i=0; i< NUM_TX_QUEUES; i++)
     {
         spin_lock_bh(&pAdapter->wmm_tx_queue[i].lock);
-        hddLog(LOGE, "HDD WMM TxQueue Info For AC: %d Count: %d PrevAdress:%p, NextAddress:%p",
+        hddLog(LOGE, "HDD WMM TxQueue Info For AC: %d Count: %d PrevAdress:%pK, NextAddress:%pK",
                i, pAdapter->wmm_tx_queue[i].count,
                pAdapter->wmm_tx_queue[i].anchor.prev, pAdapter->wmm_tx_queue[i].anchor.next);
         spin_unlock_bh(&pAdapter->wmm_tx_queue[i].lock);
@@ -8588,7 +8779,7 @@ void hdd_wmm_tx_snapshot(hdd_adapter_t *pAdapter)
              for ( j=0; j< NUM_TX_QUEUES; j++)
              {
                 spin_lock_bh(&pAdapter->aStaInfo[i].wmm_tx_queue[j].lock);
-                hddLog(LOGE, "HDD TxQueue Info For AC: %d Count: %d PrevAdress:%p, NextAddress:%p",
+                hddLog(LOGE, "HDD TxQueue Info For AC: %d Count: %d PrevAdress:%pK, NextAddress:%pK",
                        j, pAdapter->aStaInfo[i].wmm_tx_queue[j].count,
                        pAdapter->aStaInfo[i].wmm_tx_queue[j].anchor.prev,
                        pAdapter->aStaInfo[i].wmm_tx_queue[j].anchor.next);
@@ -10606,7 +10797,56 @@ int iw_set_pno(struct net_device *dev, struct iw_request_info *info,
     ptr += nOffset;
   }/*For ucNetworkCount*/
 
-  ucParams = sscanf(ptr,"%hhu %n",&(ucMode), &nOffset);
+  if (1 != sscanf(ptr, " %u %n", &(pnoRequest.fast_scan_period), &nOffset) ) {
+      VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                "failed to read fast scan period %u", *ptr);
+        vos_mem_free(data);
+        return -EINVAL;
+  }
+  if (pnoRequest.fast_scan_period == 0) {
+      VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                FL("invalid fast scan period %u"),
+                 pnoRequest.fast_scan_period);
+        vos_mem_free(data);
+        return -EINVAL;
+  }
+  pnoRequest.fast_scan_period *= MSEC_PER_SEC;
+  ptr += nOffset;
+
+  if (1 != sscanf(ptr, " %hhu %n", &(pnoRequest.fast_scan_max_cycles),
+             &nOffset)) {
+      VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                "failed to read fast scan max cycles %hhu", *ptr);
+        vos_mem_free(data);
+        return -EINVAL;
+  }
+  if (pnoRequest.fast_scan_max_cycles < CFG_PNO_SCAN_TIMER_REPEAT_VALUE_MIN ||
+      pnoRequest.fast_scan_max_cycles > CFG_PNO_SCAN_TIMER_REPEAT_VALUE_MAX) {
+      VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                "invalid fast scan max cycles %hhu",
+                 pnoRequest.fast_scan_max_cycles);
+        vos_mem_free(data);
+        return -EINVAL;
+  }
+  ptr += nOffset;
+
+  if (1 != sscanf(ptr, " %u %n", &(pnoRequest.slow_scan_period), &nOffset)) {
+      VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                "failed to read slow scan period %u", *ptr);
+        vos_mem_free(data);
+        return -EINVAL;
+  }
+  pnoRequest.slow_scan_period *= MSEC_PER_SEC;
+  if (pnoRequest.slow_scan_period < pnoRequest.fast_scan_period) {
+      VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                "invalid slow scan period %u",
+                 pnoRequest.slow_scan_period);
+        vos_mem_free(data);
+        return -EINVAL;
+  }
+  ptr += nOffset;
+
+  ucParams = sscanf(ptr," %hhu %n",&(ucMode), &nOffset);
 
   pnoRequest.modePNO = ucMode;
   /*for LA we just expose suspend option*/
@@ -11074,11 +11314,13 @@ static int __iw_set_two_ints_getnone(struct net_device *dev,
             hddLog(LOGE, "Crash Inject ini disabled, Ignore Crash Inject");
             return 0;
         }
+
+        hdd_ctx->isLogpInProgress = true;
         ret = process_wma_set_command_twoargs((int) pAdapter->sessionId,
                                               (int) GEN_PARAM_CRASH_INJECT,
                                               value[1], value[2], GEN_CMD);
-        if (!ret)
-           hdd_ctx->isLogpInProgress = true;
+        if (ret)
+            hdd_ctx->isLogpInProgress = false;
 
         break;
 #endif
@@ -11096,26 +11338,53 @@ static int __iw_set_two_ints_getnone(struct net_device *dev,
 
             tHalHandle hal_hdl = hdd_ctx->hHal;
             tCsrBssid bssid = {0};
-            tCsrRoamProfile roam_profile;
+            tCsrRoamProfile *roam_profile = NULL;
+            uint8_t ini_sub_20_ch_width =
+                        hdd_ctx->cfg_ini->sub_20_channel_width;
 
-            hddLog(LOG1, "Set monitor mode Channel %d", value[1]);
+            roam_profile = vos_mem_malloc(sizeof(tCsrRoamProfile));
+            if (roam_profile == NULL){
+                hddLog(LOGE, "Failed to allocate memory");
+                return -ENOMEM;
+            }
+            vos_mem_zero(roam_profile, sizeof(*roam_profile));
+
+            if (vht_channel_width == 4) {
+                vht_channel_width = 0;
+                roam_profile->sub20_channelwidth = SUB20_MODE_5MHZ;
+            } else if (vht_channel_width == 5) {
+                vht_channel_width = 0;
+                roam_profile->sub20_channelwidth = SUB20_MODE_10MHZ;
+            } else {
+                if (ini_sub_20_ch_width < CFG_SUB_20_CHANNEL_WIDTH_DYN_5MHZ)
+                    roam_profile->sub20_channelwidth = ini_sub_20_ch_width;
+                else
+                    roam_profile->sub20_channelwidth = SUB20_MODE_NONE;
+            }
+
+            hddLog(LOGE, "Set monitor mode Channel %d bandwidth %d sub20 %d",
+                   value[1], vht_channel_width,
+                   roam_profile->sub20_channelwidth);
             hdd_select_mon_cbmode(pAdapter, value[1], &vht_channel_width);
-            roam_profile.ChannelInfo.ChannelList = &ch_info->channel;
-            roam_profile.ChannelInfo.numOfChannels = 1;
-            roam_profile.vht_channel_width = ch_info->channel_width;
-            roam_profile.phyMode = ch_info->phy_mode;
+
+            roam_profile->ChannelInfo.ChannelList = &ch_info->channel;
+            roam_profile->ChannelInfo.numOfChannels = 1;
+            roam_profile->vht_channel_width = ch_info->channel_width;
+            roam_profile->phyMode = ch_info->phy_mode;
+
 
             vos_mem_copy(bssid, pAdapter->macAddressCurrent.bytes,
                          VOS_MAC_ADDR_SIZE);
 
             hal_status = sme_RoamChannelChangeReq(hal_hdl,
                                  bssid,
-                                 ch_info->cb_mode, &roam_profile);
+                                 ch_info->cb_mode, roam_profile);
             if (!HAL_STATUS_SUCCESS(hal_status)) {
                 hddLog(LOGE,
                        "Failed to set sme_RoamChannel for monitor mode");
                 ret = -EINVAL;
             }
+            vos_mem_free(roam_profile);
         } else {
             hddLog(LOGE, "Not supported, device is not in monitor mode");
             ret = -EINVAL;
@@ -11252,6 +11521,7 @@ static const iw_handler we_private[] = {
    [WLAN_GET_LINK_SPEED                 - SIOCIWFIRSTPRIV]   = iw_get_linkspeed_priv,
    [WLAN_PRIV_SET_TWO_INT_GET_NONE      - SIOCIWFIRSTPRIV]   = iw_set_two_ints_getnone,
    [WLAN_SET_DOT11P_CHANNEL_SCHED       - SIOCIWFIRSTPRIV]   = iw_set_dot11p_channel_sched,
+   [WLAN_GET_ISOLATION                  - SIOCIWFIRSTPRIV]   = iw_get_isolation,
 };
 
 /*Maximum command length can be only 15 */
@@ -11687,6 +11957,10 @@ static const struct iw_priv_args we_private_args[] = {
     {   WE_SET_CHANNEL,
         IW_PRIV_TYPE_INT | IW_PRIV_SIZE_FIXED | 1,
         0, "setChanChange" },
+
+    {   WE_SET_MODULATED_DTIM,
+        IW_PRIV_TYPE_INT | IW_PRIV_SIZE_FIXED | 1,
+        0, "setModDTIM" },
 
     /* handlers for sub-ioctl */
     {   WE_GET_11D_STATE,
@@ -12311,7 +12585,12 @@ static const struct iw_priv_args we_private_args[] = {
         WLAN_GET_LINK_SPEED,
         IW_PRIV_TYPE_CHAR | 18,
         IW_PRIV_TYPE_CHAR | 5, "getLinkSpeed" },
-
+    {
+        WLAN_GET_ISOLATION,
+        0,
+        IW_PRIV_TYPE_CHAR | WE_MAX_STR_LEN,
+        "get_isolation"
+    },
     /* handlers for main ioctl */
     {   WLAN_PRIV_SET_TWO_INT_GET_NONE,
         IW_PRIV_TYPE_INT | IW_PRIV_SIZE_FIXED | 2,
@@ -12586,6 +12865,16 @@ int hdd_set_wext(hdd_adapter_t *pAdapter)
     return VOS_STATUS_SUCCESS;
 }
 
+#ifdef WLAN_FEATURE_FILS_SK
+static void hdd_initialize_fils_info(hdd_wext_state_t *pwextBuf)
+{
+    pwextBuf->roamProfile.fils_con_info = NULL;
+}
+#else
+static void hdd_initialize_fils_info(hdd_wext_state_t *pwextBuf)
+{ }
+#endif
+
 /**
  * hdd_register_wext() - register wext context
  * @dev: net device handle
@@ -12627,7 +12916,7 @@ int hdd_register_wext(struct net_device *dev)
         hddLog(LOGE, ("ERROR: HDD scan event init failed!!"));
         return eHAL_STATUS_FAILURE;
     }
-
+    hdd_initialize_fils_info(pwextBuf);
     /* Register as a wireless device */
     dev->wireless_handlers = (struct iw_handler_def *)&we_handler_def;
 
@@ -12637,7 +12926,7 @@ int hdd_register_wext(struct net_device *dev)
 
 int hdd_UnregisterWext(struct net_device *dev)
 {
-	hddLog(LOG1, FL("dev(%p)"), dev);
+	hddLog(LOG1, FL("dev(%pK)"), dev);
 
 	if (dev != NULL) {
 		rtnl_lock();

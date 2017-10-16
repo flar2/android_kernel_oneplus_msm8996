@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2014, 2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2014, 2016-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -53,6 +53,339 @@
 #include <ol_txrx_encap.h>    /* OL_TX_ENCAP, etc */
 #include "vos_lock.h"
 
+#ifdef WLAN_FEATURE_DSRC
+#include "ol_tx.h"
+#include "adf_os_lock.h"
+#include "adf_os_util.h"
+#include "queue.h"
+
+/**
+ * struct ol_tx_stats_ring_item - the item of a packet tx stats in the ring
+ * @list: list for all tx stats item in the ring
+ * @stats: a packet tx stats including fields from host and FW respectively
+ * @msdu_id: msdu ID used to match stats fields respectively from host and FW
+ * into a complete tx stats item
+ * @reserved: reserved to align to 4 bytes
+ */
+struct ol_tx_stats_ring_item {
+	TAILQ_ENTRY(ol_tx_stats_ring_item) list;
+	struct ol_tx_per_pkt_stats stats;
+	uint16_t msdu_id;
+	uint8_t reserved[2];
+};
+
+/**
+ * struct ol_tx_stats_ring_head - the ring head of all tx stats
+ * @mutex: mutex to access it exclusively
+ * @free_list: list of free tx stats ring items
+ * @host_list: list of tx stats items only containing tx stats fields from host
+ * @comp_list: list of tx stats items containing complete tx stats fields
+ * from host and FW, items in this list can be dequeued to user
+ * @num_free: number of free tx stats items
+ * @num_host_stat: number of tx stats items only containing tx stats fields
+ * from host
+ * @num_comp_stat: number of tx stats items containing complete tx stats fields
+ */
+struct ol_tx_stats_ring_head {
+	adf_os_spinlock_t mutex;
+	TAILQ_HEAD(free_list, ol_tx_stats_ring_item) free_list;
+	TAILQ_HEAD(host_list, ol_tx_stats_ring_item) host_list;
+	TAILQ_HEAD(comp_list, ol_tx_stats_ring_item) comp_list;
+	uint8_t num_free;
+	uint8_t num_host_stat;
+	uint8_t num_comp_stat;
+};
+
+#define TX_STATS_RING_SZ 32
+#define INVALID_TX_MSDU_ID (-1)
+
+static struct ol_tx_stats_ring_head *tx_stats_ring_head;
+static struct ol_tx_stats_ring_item *tx_stats_ring;
+static bool __ol_per_pkt_tx_stats_enabled = false;
+
+static int ol_tx_stats_ring_init(void)
+{
+	struct ol_tx_stats_ring_head *head;
+	struct ol_tx_stats_ring_item *ring;
+	int i;
+
+	TXRX_PRINT(TXRX_PRINT_LEVEL_INFO1, "%s()\n", __func__);
+	head = vos_mem_malloc(sizeof(*head));
+	if (!head)
+		return -ENOMEM;
+	ring = vos_mem_malloc(sizeof(*ring) * TX_STATS_RING_SZ);
+	if (!ring) {
+		vos_mem_free(head);
+		return -ENOMEM;
+	}
+	tx_stats_ring_head = head;
+	tx_stats_ring = ring;
+
+	vos_mem_zero(head, sizeof(*head));
+	vos_mem_zero(ring, sizeof(*ring) * TX_STATS_RING_SZ);
+
+	TAILQ_INIT(&head->free_list);
+	TAILQ_INIT(&head->host_list);
+	TAILQ_INIT(&head->comp_list);
+
+	for (i = 0; i < TX_STATS_RING_SZ; i++) {
+		ring[i].msdu_id = INVALID_TX_MSDU_ID;
+		TAILQ_INSERT_HEAD(&head->free_list, &ring[i], list);
+	}
+	head->num_free = TX_STATS_RING_SZ;
+
+	adf_os_spinlock_init(&head->mutex);
+
+	return 0;
+}
+
+static void ol_tx_stats_ring_deinit(void)
+{
+	TXRX_PRINT(TXRX_PRINT_LEVEL_INFO1, "%s()\n", __func__);
+	if (tx_stats_ring_head) {
+		vos_mem_free(tx_stats_ring_head);
+		tx_stats_ring_head = NULL;
+	}
+	if (tx_stats_ring) {
+		vos_mem_free(tx_stats_ring);
+		tx_stats_ring = NULL;
+	}
+}
+
+void ol_per_pkt_tx_stats_enable(bool enable)
+{
+	int ret = 0;
+
+	if (__ol_per_pkt_tx_stats_enabled == enable)
+		return;
+
+	if (enable)
+		ret = ol_tx_stats_ring_init();
+	else
+		ol_tx_stats_ring_deinit();
+
+	if (!ret)
+		__ol_per_pkt_tx_stats_enabled = enable;
+	else
+		__ol_per_pkt_tx_stats_enabled = false;
+
+	adf_os_mb();
+}
+
+bool ol_per_pkt_tx_stats_enabled(void)
+{
+	return __ol_per_pkt_tx_stats_enabled;
+}
+
+static inline int __free_list_empty(void)
+{
+	return TAILQ_EMPTY(&tx_stats_ring_head->free_list);
+}
+
+static inline int __host_list_empty(void)
+{
+	return TAILQ_EMPTY(&tx_stats_ring_head->host_list);
+}
+
+static inline int __comp_list_empty(void)
+{
+	return TAILQ_EMPTY(&tx_stats_ring_head->comp_list);
+}
+
+static inline struct ol_tx_stats_ring_item *__get_ring_item(void)
+{
+	struct ol_tx_stats_ring_head *h = tx_stats_ring_head;
+	struct ol_tx_stats_ring_item *item = NULL;
+
+	if (!__free_list_empty()) {
+		item = TAILQ_FIRST(&h->free_list);
+		TAILQ_REMOVE(&h->free_list, item, list);
+		h->num_free--;
+	} else if (!__comp_list_empty()) {
+		/* Discard the oldest one. */
+		item = TAILQ_LAST(&h->comp_list, comp_list);
+		TAILQ_REMOVE(&h->comp_list, item, list);
+		h->num_comp_stat--;
+	} else if (!__host_list_empty()) {
+		item = TAILQ_LAST(&h->host_list, host_list);
+		TAILQ_REMOVE(&h->host_list, item, list);
+		h->num_host_stat--;
+	}
+
+	return item;
+}
+
+static inline struct ol_tx_stats_ring_item *
+__get_ring_item_host(uint32_t msdu_id)
+{
+	struct ol_tx_stats_ring_head *h = tx_stats_ring_head;
+	struct ol_tx_stats_ring_item *item = NULL;
+	struct ol_tx_stats_ring_item *temp = NULL;
+
+	if (__host_list_empty())
+		goto exit;
+
+	TAILQ_FOREACH_REVERSE(temp, &h->host_list, host_list, list) {
+		if (temp && (temp->msdu_id == msdu_id)) {
+			item = temp;
+			TAILQ_REMOVE(&h->host_list, item, list);
+			h->num_host_stat--;
+			goto exit;
+		}
+	}
+
+exit:
+	return item;
+}
+
+static inline struct ol_tx_stats_ring_item *__get_ring_item_comp(void)
+{
+	struct ol_tx_stats_ring_head *h = tx_stats_ring_head;
+	struct ol_tx_stats_ring_item *item = NULL;
+
+	if (__comp_list_empty())
+		goto exit;
+
+	item = TAILQ_LAST(&h->comp_list, comp_list);
+	TAILQ_REMOVE(&h->comp_list, item, list);
+	h->num_comp_stat--;
+
+exit:
+	return item;
+}
+
+static inline void __put_ring_item_host(struct ol_tx_stats_ring_item *item)
+{
+	struct ol_tx_stats_ring_head *h = tx_stats_ring_head;
+
+	TAILQ_INSERT_HEAD(&h->host_list, item, list);
+	h->num_host_stat++;
+}
+
+static inline void __put_ring_item_comp(struct ol_tx_stats_ring_item *item)
+{
+	struct ol_tx_stats_ring_head *h = tx_stats_ring_head;
+
+	TAILQ_INSERT_HEAD(&h->comp_list, item, list);
+	h->num_comp_stat++;
+}
+
+static inline void __free_ring_item(struct ol_tx_stats_ring_item *item)
+{
+	struct ol_tx_stats_ring_head *h = tx_stats_ring_head;
+
+	TAILQ_INSERT_HEAD(&h->free_list, item, list);
+	h->num_free++;
+}
+
+/**
+ * ol_tx_stats_ring_enque_host() - enqueue the tx stats fields of a packet
+ * collected from tx path of host driver
+ * @msdu_id: ol_tx_desc_id
+ * @chan_freq: channel freqency
+ * @bandwidth: channel bandwith like 10 or 20MHz
+ * @mac_address: mac address used
+ * @datarate: data rate used
+ *
+ * This interface is for caller from TXRX layer in interrupt context.
+ */
+void ol_tx_stats_ring_enque_host(uint32_t msdu_id, uint32_t chan_freq,
+				uint32_t bandwidth, uint8_t *mac_address,
+				uint8_t datarate)
+{
+	struct ol_tx_stats_ring_head *h = tx_stats_ring_head;
+	struct ol_tx_stats_ring_item *item;
+	static uint32_t seq_no = 0;
+
+	if (!h)
+		return;
+
+	adf_os_spin_lock(&h->mutex);
+
+	item = __get_ring_item();
+	if (!item)
+		goto exit;
+
+	item->msdu_id = msdu_id;
+	item->stats.seq_no = seq_no++;
+	item->stats.chan_freq = chan_freq;
+	item->stats.bandwidth = bandwidth;
+	vos_mem_copy(item->stats.mac_address, mac_address, 6);
+	item->stats.datarate = datarate;
+
+	__put_ring_item_host(item);
+
+exit:
+	adf_os_spin_unlock(&h->mutex);
+}
+
+/**
+ * ol_tx_stats_ring_enque_comp() - enqueue the tx power of a packet from FW
+ * to form a complete tx stats item, which can be delivered to user
+ * @msdu_id: ol_tx_desc_id
+ * @tx_power: tx power used from FW
+ *
+ * This interface is for caller from WMA layer context.
+ */
+void ol_tx_stats_ring_enque_comp(uint32_t msdu_id, uint32_t tx_power)
+{
+	struct ol_tx_stats_ring_head *h = tx_stats_ring_head;
+	struct ol_tx_stats_ring_item *item;
+
+	if (!h)
+		return;
+
+	adf_os_spin_lock(&h->mutex);
+
+	item = __get_ring_item_host(msdu_id);
+	if (!item)
+		goto exit;
+
+	item->stats.tx_power = (uint8_t)tx_power;
+	__put_ring_item_comp(item);
+
+exit:
+	adf_os_spin_unlock(&h->mutex);
+}
+
+/**
+ * ol_tx_stats_ring_deque() - dequeue a complete tx stats item to user
+ * @stats: tx per packet stats
+ *
+ * This interface is for caller from user space process context.
+ *
+ * Return: 1 if get a tx stats, 0 for no stats got
+ */
+int ol_tx_stats_ring_deque(struct ol_tx_per_pkt_stats *stats)
+{
+	struct ol_tx_stats_ring_head *h = tx_stats_ring_head;
+	struct ol_tx_stats_ring_item *item;
+	int ret = 0;
+
+	if (!h)
+		return ret;
+
+	adf_os_spin_lock(&h->mutex);
+
+	item = __get_ring_item_comp();
+	if (!item)
+		goto exit;
+
+	__free_ring_item(item);
+
+	vos_mem_copy(stats, &item->stats, sizeof(*stats));
+	item->msdu_id = INVALID_TX_MSDU_ID;
+	ret = 1;
+
+exit:
+	adf_os_spin_unlock(&h->mutex);
+	return ret;
+}
+#endif /* WLAN_FEATURE_DSRC */
+
+adf_nbuf_t
+ol_tx_hl_vdev_queue_tcp_ack_send_all(struct ol_txrx_vdev_t *vdev);
+
 #define ol_tx_prepare_ll(tx_desc, vdev, msdu, msdu_info) \
     do {                                                                      \
         struct ol_txrx_pdev_t *pdev = vdev->pdev;                             \
@@ -102,8 +435,10 @@ ol_tx_ll(ol_txrx_vdev_handle vdev, adf_nbuf_t msdu_list)
         msdu_info.htt.info.ext_tid = adf_nbuf_get_tid(msdu);
         msdu_info.peer = NULL;
 
-        adf_nbuf_map_single(adf_ctx, msdu,
+        if (!adf_nbuf_is_ipa_nbuf(msdu)) {
+            adf_nbuf_map_single(adf_ctx, msdu,
                              ADF_OS_DMA_TO_DEVICE);
+        }
         ol_tx_prepare_ll(tx_desc, vdev, msdu, &msdu_info);
 
         /*
@@ -208,7 +543,7 @@ ol_tx_vdev_ll_pause_queue_send_base(struct ol_txrx_vdev_t *vdev)
              */
             if (tx_msdu) {
                 adf_nbuf_unmap(vdev->pdev->osdev, tx_msdu, ADF_OS_DMA_TO_DEVICE);
-                adf_nbuf_tx_free(tx_msdu, 1 /* error */);
+                adf_nbuf_tx_free(tx_msdu, ADF_NBUF_PKT_ERROR);
             }
         }
     }
@@ -395,7 +730,7 @@ ol_tx_pdev_ll_pause_queue_send_all(struct ol_txrx_pdev_t *pdev)
                  */
                 if (tx_msdu) {
                     adf_nbuf_unmap(pdev->osdev, tx_msdu, ADF_OS_DMA_TO_DEVICE);
-                    adf_nbuf_tx_free(tx_msdu, 1 /* error */);
+                    adf_nbuf_tx_free(tx_msdu, ADF_NBUF_PKT_ERROR);
                 }
             }
             /*check if there are more msdus to transmit*/
@@ -598,10 +933,27 @@ static bool parse_ocb_tx_header(adf_nbuf_t msdu,
  * equivalent parameter in def_ctrl_hdr will be copied to tx_ctrl.
  */
 static void merge_ocb_tx_ctrl_hdr(struct ocb_tx_ctrl_hdr_t *tx_ctrl,
-				  struct ocb_tx_ctrl_hdr_t *def_ctrl_hdr)
+				  struct ocb_tx_ctrl_hdr_t *def_ctrl_hdr,
+				  uint32_t ocb_channel_count)
 {
-	if (!tx_ctrl || !def_ctrl_hdr)
+	int i;
+	struct ocb_tx_ctrl_hdr_t *temp;
+
+	if (!tx_ctrl || !def_ctrl_hdr || !ocb_channel_count)
 		return;
+
+	/*
+	 * Find default TX ctrl parameters based on channel frequence.
+	 * Up to two different channels are supported. Default TX ctrl
+	 * parameters are configured from ocb set configure command.
+	 */
+	temp = def_ctrl_hdr;
+	for (i = 0; i < ocb_channel_count; i++, temp++) {
+		if (temp->channel_freq == tx_ctrl->channel_freq) {
+			def_ctrl_hdr = temp;
+			break;
+		}
+	}
 
 	if (!tx_ctrl->channel_freq && def_ctrl_hdr->channel_freq)
 		tx_ctrl->channel_freq = def_ctrl_hdr->channel_freq;
@@ -632,6 +984,92 @@ static void merge_ocb_tx_ctrl_hdr(struct ocb_tx_ctrl_hdr_t *tx_ctrl,
 	}
 }
 
+#ifdef WLAN_FEATURE_DSRC
+/**
+ * dsrc_update_broadcast_frame_sa() - update source address of DSRC broadcast
+ * frame
+ * @vdev: virtual device handle corresponding to wlanocb0.
+ * @tx_ctrl: default TX control header.
+ * @msdu: MAC service data unit.
+ *
+ * For each channel of DSRC has its MAC address, which may be different from
+ * the MAC address of interface wlanocb0, so we need to update the source MAC
+ * address per channel.
+ */
+static void dsrc_update_broadcast_frame_sa(ol_txrx_vdev_handle vdev,
+					   struct ocb_tx_ctrl_hdr_t *tx_ctrl,
+					   adf_nbuf_t msdu)
+{
+	int i;
+	uint8_t *da;
+	uint8_t *sa;
+	struct ieee80211_frame *wh;
+	struct ether_header *eh;
+	struct ol_txrx_ocb_chan_info *chan_info;
+
+	chan_info = &vdev->ocb_channel_info[0];
+	for (i = 0; i < vdev->ocb_channel_count; i++) {
+		if (tx_ctrl->channel_freq ==
+		    vdev->ocb_channel_info[i].chan_freq) {
+			chan_info = &vdev->ocb_channel_info[i];
+			break;
+		}
+	}
+
+	if (tx_ctrl->valid_eth_mode) {
+		eh = (struct ether_header *)adf_nbuf_data(msdu);
+		da = eh->ether_dhost;
+		sa = eh->ether_shost;
+	} else {
+		wh = (struct ieee80211_frame *)adf_nbuf_data(msdu);
+		da = wh->i_addr1;
+		sa = wh->i_addr2;
+	}
+
+	if (vos_is_macaddr_broadcast((v_MACADDR_t *)da)) {
+		vos_mem_copy(sa, chan_info->mac_address,
+			     sizeof(chan_info->mac_address));
+	}
+}
+
+/* If the vdev is in OCB mode, collect per packet tx stats. */
+static inline void
+ol_collect_per_pkt_tx_stats(ol_txrx_vdev_handle vdev,
+			    struct ocb_tx_ctrl_hdr_t *tx_ctrl, uint32_t msdu_id)
+{
+	struct ol_txrx_ocb_chan_info *chan_info;
+	int i;
+
+	if (!ol_per_pkt_tx_stats_enabled())
+		return;
+
+	chan_info = &vdev->ocb_channel_info[0];
+	for (i = 0; i < vdev->ocb_channel_count; i++) {
+		if (tx_ctrl->channel_freq ==
+		    vdev->ocb_channel_info[i].chan_freq) {
+			chan_info = &vdev->ocb_channel_info[i];
+			break;
+		}
+	}
+
+	ol_tx_stats_ring_enque_host(msdu_id, tx_ctrl->channel_freq,
+				   chan_info->bandwidth, chan_info->mac_address,
+				   tx_ctrl->datarate);
+}
+#else
+static void dsrc_update_broadcast_frame_sa(ol_txrx_vdev_handle vdev,
+					   struct ocb_tx_ctrl_hdr_t *tx_ctrl,
+					   adf_nbuf_t msdu)
+{
+}
+
+static inline void
+ol_collect_per_pkt_tx_stats(ol_txrx_vdev_handle vdev,
+			    struct ocb_tx_ctrl_hdr_t *tx_ctrl, uint32_t msdu_id)
+{
+}
+#endif /* WLAN_FEATURE_DSRC */
+
 static inline adf_nbuf_t
 ol_tx_hl_base(
     ol_txrx_vdev_handle vdev,
@@ -641,10 +1079,14 @@ ol_tx_hl_base(
 {
     struct ol_txrx_pdev_t *pdev = vdev->pdev;
     adf_nbuf_t msdu = msdu_list;
+    adf_nbuf_t msdu_drop_list = NULL;
+    adf_nbuf_t prev_drop = NULL;
     struct ol_txrx_msdu_info_t tx_msdu_info;
     struct ocb_tx_ctrl_hdr_t tx_ctrl;
 
     htt_pdev_handle htt_pdev = pdev->htt_pdev;
+    uint8_t rtap[MAX_RADIOTAP_LEN] = {0};
+    uint8_t rtap_len = 0;
     tx_msdu_info.peer = NULL;
 
     /*
@@ -659,13 +1101,37 @@ ol_tx_hl_base(
         struct ol_tx_desc_t *tx_desc = NULL;
 
         adf_os_mem_zero(&tx_ctrl, sizeof(tx_ctrl));
-
+        tx_msdu_info.peer = NULL;
         /*
          * The netbuf will get stored into a (peer-TID) tx queue list
          * inside the ol_tx_classify_store function or else dropped,
          * so store the next pointer immediately.
          */
         next = adf_nbuf_next(msdu);
+
+        /*
+         * copy radiotap header out first.
+         */
+        if (VOS_MONITOR_MODE == vos_get_conparam()) {
+            struct ieee80211_radiotap_header *rthdr;
+            rthdr = (struct ieee80211_radiotap_header *)(adf_nbuf_data(msdu));
+            rtap_len = rthdr->it_len;
+            if (rtap_len > MAX_RADIOTAP_LEN) {
+                TXRX_PRINT(TXRX_PRINT_LEVEL_ERR,
+                           "radiotap length exceeds %d, drop it!\n",
+                           MAX_RADIOTAP_LEN);
+                adf_nbuf_set_next(msdu, NULL);
+                if (!msdu_drop_list)
+                    msdu_drop_list = msdu;
+                else
+                    adf_nbuf_set_next(prev_drop, msdu);
+                prev_drop = msdu;
+                msdu = next;
+                continue;
+            }
+            adf_os_mem_copy(rtap, rthdr, rtap_len);
+            adf_nbuf_pull_head(msdu, rtap_len);
+        }
 
 #if defined(CONFIG_TX_DESC_HI_PRIO_RESERVE)
         if (adf_os_atomic_read(&pdev->tx_queue.rsrc_cnt) >
@@ -685,8 +1151,15 @@ ol_tx_hl_base(
              * tx descs for the remaining MSDUs.
              */
             TXRX_STATS_MSDU_LIST_INCR(pdev, tx.dropped.host_reject, msdu);
-            return msdu; /* the list of unaccepted MSDUs */
+            if (!msdu_drop_list)
+                msdu_drop_list = msdu;
+            else
+                adf_nbuf_set_next(prev_drop, msdu);
+            return msdu_drop_list; /* the list of unaccepted MSDUs */
         }
+
+        tx_desc->rtap_len = rtap_len;
+        adf_os_mem_copy(tx_desc->rtap, rtap, rtap_len);
 
 //        OL_TXRX_PROT_AN_LOG(pdev->prot_an_tx_sent, msdu);
 
@@ -724,12 +1197,30 @@ ol_tx_hl_base(
                 /* There was an error parsing the header. Skip this packet. */
                 goto MSDU_LOOP_BOTTOM;
             }
-            /* If the TX control header was not found, just use the defaults */
-            if (!tx_ctrl_header_found && vdev->ocb_def_tx_param)
-                vos_mem_copy(&tx_ctrl, vdev->ocb_def_tx_param, sizeof(tx_ctrl));
-            /* If the TX control header was found, merge the defaults into it */
-            else if (tx_ctrl_header_found && vdev->ocb_def_tx_param)
-                merge_ocb_tx_ctrl_hdr(&tx_ctrl, vdev->ocb_def_tx_param);
+            /*
+             * For dsrc tx frame, the TX control header MUST be provided by
+             * dsrc app, merge the saved defaults into it.
+             * The non-dsrc(like IPv6 frames etc.) tx frame has no tx_ctrl_hdr,
+             * and we distingush dsrc and non-dsrc tx frame only by whether
+             * tx_ctrl_hdr is found in the frame.
+             * So, if there has no tx_ctrl_hdr from dsrc app, then there will
+             * has no tx_ctrl_hdr added to send down to FW.
+             */
+            if (tx_ctrl_header_found && vdev->ocb_def_tx_param)
+                merge_ocb_tx_ctrl_hdr(&tx_ctrl, vdev->ocb_def_tx_param,
+                                      vdev->ocb_channel_count);
+
+            /*
+             * Check OCB Broadcast frame Source address.
+             * Per OCB channel, it includes a default MAC address
+             * for broadcast DSRC frame in this channel.
+             */
+            if (tx_ctrl_header_found) {
+                dsrc_update_broadcast_frame_sa(vdev, &tx_ctrl, msdu);
+
+                /* only collect dsrc tx packet stats.*/
+                ol_collect_per_pkt_tx_stats(vdev, &tx_ctrl, tx_desc->id);
+            }
         }
 
         txq = ol_tx_classify(vdev, tx_desc, msdu, &tx_msdu_info);
@@ -796,6 +1287,16 @@ ol_tx_hl_base(
          */
         htt_tx_desc_display(tx_desc->htt_tx_desc);
 
+        /* push radiotap as extra frag */
+        if (VOS_MONITOR_MODE == vos_get_conparam()) {
+            adf_nbuf_frag_push_head(
+                    msdu,
+                    tx_desc->rtap_len,
+                    (uint8_t *)tx_desc->rtap, /* virtual addr */
+                    0, 0 /* phys addr MSBs - n/a */);
+                    adf_nbuf_set_frag_is_wordstream(msdu, 1, 1);
+        }
+
         ol_tx_enqueue(pdev, txq, tx_desc, &tx_msdu_info);
         if (tx_msdu_info.peer) {
             OL_TX_PEER_STATS_UPDATE(tx_msdu_info.peer, msdu);
@@ -809,7 +1310,7 @@ MSDU_LOOP_BOTTOM:
     if (call_sched == true)
         ol_tx_sched(pdev);
 
-    return NULL; /* all MSDUs were accepted */
+    return msdu_drop_list; /* all MSDUs were accepted */
 }
 
 /**
@@ -836,6 +1337,470 @@ ol_txrx_vdev_handle ol_txrx_get_vdev_from_vdev_id(uint8_t vdev_id)
 
 	return vdev;
 }
+
+#ifdef QCA_SUPPORT_TXRX_DRIVER_TCP_DEL_ACK
+
+/**
+ * ol_tx_pdev_reset_driver_del_ack() - reset driver delayed ack enabled flag
+ * @pdev_handle: pdev handle
+ *
+ * Return: none
+ */
+void
+ol_tx_pdev_reset_driver_del_ack(void *pdev_handle)
+{
+	struct ol_txrx_pdev_t *pdev = (struct ol_txrx_pdev_t *)pdev_handle;
+	struct ol_txrx_vdev_t *vdev;
+
+	TAILQ_FOREACH(vdev, &pdev->vdev_list, vdev_list_elem) {
+		vdev->driver_del_ack_enabled = false;
+		TXRX_PRINT(TXRX_PRINT_LEVEL_INFO1,
+			"vdev_id %d driver_del_ack_enabled %d\n",
+			vdev->vdev_id, vdev->driver_del_ack_enabled);
+	}
+}
+
+/**
+ * ol_tx_vdev_set_driver_del_ack_enable() - set driver delayed ack enabled flag
+ * @vdev_id: vdev id
+ * @rx_packets: number of rx packets
+ * @time_in_ms: time in ms
+ * @high_th: high threashold
+ * @low_th: low threashold
+ *
+ * Return: none
+ */
+void
+ol_tx_vdev_set_driver_del_ack_enable(uint8_t vdev_id, unsigned long rx_packets,
+			uint32_t time_in_ms, uint32_t high_th, uint32_t low_th)
+{
+	struct ol_txrx_vdev_t *vdev = ol_txrx_get_vdev_from_vdev_id(vdev_id);
+	bool old_driver_del_ack_enabled;
+
+	if ((!vdev) || (low_th > high_th))
+		return;
+
+	old_driver_del_ack_enabled = vdev->driver_del_ack_enabled;
+	if (rx_packets > high_th)
+		vdev->driver_del_ack_enabled = true;
+	else if (rx_packets < low_th)
+		vdev->driver_del_ack_enabled = false;
+
+	if (old_driver_del_ack_enabled != vdev->driver_del_ack_enabled) {
+		TXRX_PRINT(TXRX_PRINT_LEVEL_INFO1,
+			"vdev_id %d driver_del_ack_enabled %d rx_packets %ld"
+			" time_in_ms %d high_th %d low_th %d\n",
+			vdev->vdev_id, vdev->driver_del_ack_enabled,
+			rx_packets, time_in_ms, high_th, low_th);
+	}
+}
+
+/**
+ * ol_tx_hl_send_all_tcp_ack() - send all queued tcp ack packets
+ * @vdev: vdev handle
+ *
+ * Return: none
+ */
+void ol_tx_hl_send_all_tcp_ack(struct ol_txrx_vdev_t *vdev)
+{
+	int i = 0;
+	struct tcp_stream_node *tcp_node_list = NULL;
+	struct tcp_stream_node *temp = NULL;
+
+	for (i = 0; i < OL_TX_HL_DEL_ACK_HASH_SIZE; i++) {
+		tcp_node_list = NULL;
+		adf_os_spin_lock_bh(&vdev->tcp_ack_hash.node[i].hash_node_lock);
+		if (vdev->tcp_ack_hash.node[i].no_of_entries)
+			tcp_node_list = vdev->tcp_ack_hash.node[i].head;
+
+		vdev->tcp_ack_hash.node[i].no_of_entries = 0;
+		vdev->tcp_ack_hash.node[i].head = NULL;
+		adf_os_spin_unlock_bh(&vdev->tcp_ack_hash.node[i].hash_node_lock);
+
+		/* Send all packets */
+		while (tcp_node_list) {
+			int tx_comp_req = vdev->pdev->cfg.default_tx_comp_req;
+			adf_nbuf_t msdu_list = NULL;
+
+			temp = tcp_node_list;
+			tcp_node_list = temp->next;
+
+			msdu_list = ol_tx_hl_base(vdev, ol_tx_spec_std,
+					temp->head, tx_comp_req, false);
+			if (msdu_list)
+				adf_nbuf_tx_free(msdu_list, 1/*error*/);
+			ol_txrx_vdev_free_tcp_node(vdev, temp);
+		}
+	}
+	ol_tx_sched(vdev->pdev);
+}
+
+/**
+ * tcp_del_ack_tasklet() - tasklet function to send ack packets
+ * @data: vdev handle
+ *
+ * Return: none
+ */
+void tcp_del_ack_tasklet(unsigned long data)
+{
+	struct ol_txrx_vdev_t *vdev = (struct ol_txrx_vdev_t *)data;
+
+	ol_tx_hl_send_all_tcp_ack(vdev);
+}
+
+/**
+ * ol_tx_get_stream_id() - get stream_id from packet info
+ * @info: packet info
+ *
+ * Return: stream_id
+ */
+uint16_t ol_tx_get_stream_id(struct packet_info *info)
+{
+	return ((info->dst_port + info->dst_ip + info->src_port + info->src_ip)
+					 & (OL_TX_HL_DEL_ACK_HASH_SIZE - 1));
+}
+
+/**
+ * ol_tx_get_packet_info() - update packet info for passed msdu
+ * @msdu: packet
+ * @info: packet info
+ *
+ * Return: none
+ */
+void ol_tx_get_packet_info(adf_nbuf_t msdu, struct packet_info *info)
+{
+	uint16_t ether_type;
+	uint8_t  protocol;
+	uint8_t  flag, header_len;
+	uint32_t seg_len;
+	uint8_t  *skb_data;
+	uint32_t skb_len;
+
+	info->type = NO_TCP_PKT;
+
+	adf_nbuf_peek_header(msdu, &skb_data, &skb_len);
+	if (skb_len < ADF_NBUF_TRAC_TCP_FLAGS_OFFSET)
+		return;
+
+	ether_type = (v_U16_t)(*(v_U16_t *)
+			(skb_data + ADF_NBUF_TRAC_ETH_TYPE_OFFSET));
+	protocol = (v_U16_t)(*(v_U16_t *)
+			(skb_data + ADF_NBUF_TRAC_IPV4_PROTO_TYPE_OFFSET));
+
+	if ((ADF_NBUF_TRAC_IPV4_ETH_TYPE == VOS_SWAP_U16(ether_type)) &&
+		(protocol == ADF_NBUF_TRAC_TCP_TYPE)) {
+		header_len = ((v_U8_t)(*(v_U8_t *)
+			(skb_data + ADF_NBUF_TRAC_TCP_HEADER_LEN_OFFSET))) >> 2;
+		seg_len = skb_len - header_len - 34;
+		flag = (v_U8_t)(*(v_U8_t *)
+			(skb_data + ADF_NBUF_TRAC_TCP_FLAGS_OFFSET));
+
+		info->src_ip = VOS_SWAP_U32((v_U32_t)(*(v_U32_t *)
+			(skb_data + ADF_NBUF_TRAC_IPV4_SRC_ADDR_OFFSET)));
+		info->dst_ip = VOS_SWAP_U32((v_U32_t)(*(v_U32_t *)
+			(skb_data + ADF_NBUF_TRAC_IPV4_DEST_ADDR_OFFSET)));
+		info->src_port = VOS_SWAP_U16((v_U16_t)(*(v_U16_t *)
+				(skb_data + ADF_NBUF_TRAC_TCP_SPORT_OFFSET)));
+		info->dst_port = VOS_SWAP_U16((v_U16_t)(*(v_U16_t *)
+				(skb_data + ADF_NBUF_TRAC_TCP_DPORT_OFFSET)));
+		info->stream_id = ol_tx_get_stream_id(info);
+
+		if ((flag == ADF_NBUF_TRAC_TCP_ACK_MASK) && (seg_len == 0)) {
+			info->type = TCP_PKT_ACK;
+			info->ack_number = (v_U32_t)(*(v_U32_t *)
+				(skb_data + ADF_NBUF_TRAC_TCP_ACK_OFFSET));
+			info->ack_number = VOS_SWAP_U32(info->ack_number);
+		} else {
+			info->type = TCP_PKT_NO_ACK;
+		}
+	}
+
+}
+
+/**
+ * ol_tx_hl_find_and_send_tcp_stream() - find and send tcp stream for passed
+ *                                       stream info
+ * @vdev: vdev handle
+ * @info: packet info
+ *
+ * Return: none
+ */
+void ol_tx_hl_find_and_send_tcp_stream(struct ol_txrx_vdev_t *vdev,
+			struct packet_info *info)
+{
+	uint8_t no_of_entries;
+	struct tcp_stream_node *node_to_be_remove = NULL;
+
+	/* remove tcp node from hash */
+	adf_os_spin_lock_bh(&vdev->tcp_ack_hash.node[info->stream_id].hash_node_lock);
+
+	no_of_entries = vdev->tcp_ack_hash.node[info->stream_id].no_of_entries;
+	if (no_of_entries > 1) {
+		/* collision case */
+		struct tcp_stream_node *head =
+			vdev->tcp_ack_hash.node[info->stream_id].head;
+		struct tcp_stream_node *temp;
+
+		if ((head->dst_ip == info->dst_ip) &&
+		    (head->src_ip == info->src_ip) &&
+		    (head->src_port == info->src_port) &&
+		    (head->dst_port == info->dst_port)) {
+			node_to_be_remove = head;
+			vdev->tcp_ack_hash.node[info->stream_id].head = head->next;
+			vdev->tcp_ack_hash.node[info->stream_id].no_of_entries--;
+		} else {
+			temp = head;
+			while (temp->next) {
+				if ((temp->next->dst_ip == info->dst_ip) &&
+				    (temp->next->src_ip == info->src_ip) &&
+				    (temp->next->src_port == info->src_port) &&
+				    (temp->next->dst_port == info->dst_port)) {
+					node_to_be_remove = temp->next;
+					temp->next = temp->next->next;
+					vdev->tcp_ack_hash.node[info->stream_id].no_of_entries--;
+					break;
+				}
+				temp = temp->next;
+			}
+		}
+	} else if (no_of_entries == 1) {
+		/* Only one tcp_node */
+		node_to_be_remove =
+			 vdev->tcp_ack_hash.node[info->stream_id].head;
+		vdev->tcp_ack_hash.node[info->stream_id].head = NULL;
+		vdev->tcp_ack_hash.node[info->stream_id].no_of_entries = 0;
+	}
+	adf_os_spin_unlock_bh(&vdev->tcp_ack_hash.node[info->stream_id].hash_node_lock);
+
+	/* send packets */
+	if (node_to_be_remove) {
+		int tx_comp_req = vdev->pdev->cfg.default_tx_comp_req;
+		adf_nbuf_t msdu_list = NULL;
+
+		msdu_list = ol_tx_hl_base(vdev, ol_tx_spec_std,
+			node_to_be_remove->head, tx_comp_req, true);
+		if (msdu_list)
+			adf_nbuf_tx_free(msdu_list, 1/*error*/);
+		ol_txrx_vdev_free_tcp_node(vdev, node_to_be_remove);
+	}
+}
+
+static struct tcp_stream_node *
+ol_tx_hl_replace_tcp_ack(struct ol_txrx_vdev_t *vdev, adf_nbuf_t msdu,
+			 struct packet_info *info, uint8_t *is_found,
+			 uint8_t *start_timer)
+{
+	struct tcp_stream_node *node_to_be_remove = NULL;
+	struct tcp_stream_node *head =
+		 vdev->tcp_ack_hash.node[info->stream_id].head;
+	struct tcp_stream_node *temp;
+
+	if ((head->dst_ip == info->dst_ip) &&
+	    (head->src_ip == info->src_ip) &&
+	    (head->src_port == info->src_port) &&
+	    (head->dst_port == info->dst_port)) {
+
+		*is_found = 1;
+		if ((head->ack_number < info->ack_number) &&
+		    (head->no_of_ack_replaced <
+		    ol_cfg_get_del_ack_count_value(vdev->pdev->ctrl_pdev))) {
+			/* replace ack packet */
+			adf_nbuf_tx_free(head->head, 1);
+			head->head = msdu;
+			head->ack_number = info->ack_number;
+			head->no_of_ack_replaced++;
+			*start_timer = 1;
+			if (head->no_of_ack_replaced ==
+			    ol_cfg_get_del_ack_count_value(vdev->pdev->ctrl_pdev)) {
+				node_to_be_remove = head;
+				vdev->tcp_ack_hash.node[info->stream_id].head = head->next;
+				vdev->tcp_ack_hash.node[info->stream_id].no_of_entries--;
+			}
+		} else {
+			/* append and send packets */
+			head->head->next = msdu;
+			node_to_be_remove = head;
+			vdev->tcp_ack_hash.node[info->stream_id].head = head->next;
+			vdev->tcp_ack_hash.node[info->stream_id].no_of_entries--;
+		}
+	} else {
+		temp = head;
+		while (temp->next) {
+			if ((temp->next->dst_ip == info->dst_ip) &&
+			    (temp->next->src_ip == info->src_ip) &&
+			    (temp->next->src_port == info->src_port) &&
+			    (temp->next->dst_port == info->dst_port)) {
+
+				*is_found = 1;
+				if ((temp->next->ack_number <
+					info->ack_number) &&
+				    (temp->next->no_of_ack_replaced <
+					 ol_cfg_get_del_ack_count_value(vdev->pdev->ctrl_pdev))) {
+					/* replace ack packet */
+					adf_nbuf_tx_free(temp->next->head, 1);
+					temp->next->head  = msdu;
+					temp->next->ack_number = info->ack_number;
+					temp->next->no_of_ack_replaced++;
+					*start_timer = 1;
+					if (temp->next->no_of_ack_replaced ==
+					   ol_cfg_get_del_ack_count_value(vdev->pdev->ctrl_pdev)) {
+						node_to_be_remove = temp->next;
+						temp->next = temp->next->next;
+						vdev->tcp_ack_hash.node[info->stream_id].no_of_entries--;
+					}
+				} else {
+					/* append and send packets */
+					temp->next->head->next = msdu;
+					node_to_be_remove = temp->next;
+					temp->next = temp->next->next;
+					vdev->tcp_ack_hash.node[info->stream_id].no_of_entries--;
+				}
+				break;
+			}
+			temp = temp->next;
+		}
+	}
+	return node_to_be_remove;
+}
+
+/**
+ * ol_tx_hl_find_and_replace_tcp_ack() - find and replace tcp ack packet for
+ *                                       passed packet info
+ * @vdev: vdev handle
+ * @msdu: packet
+ * @info: packet info
+ *
+ * Return: none
+ */
+void ol_tx_hl_find_and_replace_tcp_ack(struct ol_txrx_vdev_t *vdev,
+					adf_nbuf_t msdu,
+					struct packet_info *info)
+{
+	uint8_t no_of_entries;
+	struct tcp_stream_node *node_to_be_remove = NULL;
+	uint8_t is_found = 0, start_timer = 0;
+
+	/* replace ack if required or send packets */
+	adf_os_spin_lock_bh(&vdev->tcp_ack_hash.node[info->stream_id].hash_node_lock);
+
+	no_of_entries = vdev->tcp_ack_hash.node[info->stream_id].no_of_entries;
+	if (no_of_entries > 0) {
+		node_to_be_remove = ol_tx_hl_replace_tcp_ack(vdev, msdu, info,
+					&is_found, &start_timer);
+	}
+
+	if (no_of_entries == 0 || is_found == 0) {
+		/* Alloc new tcp node */
+		struct tcp_stream_node *new_node;
+
+		new_node = ol_txrx_vdev_alloc_tcp_node(vdev);
+		if (!new_node) {
+			adf_os_spin_unlock_bh(&vdev->tcp_ack_hash.node[info->stream_id].hash_node_lock);
+			TXRX_PRINT(TXRX_PRINT_LEVEL_FATAL_ERR, "Malloc failed");
+			return;
+		}
+		new_node->stream_id = info->stream_id;
+		new_node->dst_ip = info->dst_ip;
+		new_node->src_ip = info->src_ip;
+		new_node->dst_port = info->dst_port;
+		new_node->src_port = info->src_port;
+		new_node->ack_number = info->ack_number;
+		new_node->head = msdu;
+		new_node->next = NULL;
+		new_node->no_of_ack_replaced = 0;
+
+		start_timer = 1;
+		/* insert new_node */
+		if (!vdev->tcp_ack_hash.node[info->stream_id].head) {
+			vdev->tcp_ack_hash.node[info->stream_id].head = new_node;
+			vdev->tcp_ack_hash.node[info->stream_id].no_of_entries = 1;
+		} else {
+			struct tcp_stream_node *temp =
+				 vdev->tcp_ack_hash.node[info->stream_id].head;
+			while (temp->next) {
+				temp = temp->next;
+			}
+			temp->next = new_node;
+			vdev->tcp_ack_hash.node[info->stream_id].no_of_entries++;
+		}
+	}
+	adf_os_spin_unlock_bh(&vdev->tcp_ack_hash.node[info->stream_id].hash_node_lock);
+
+	/* start timer */
+	if (start_timer &&
+	    (!adf_os_atomic_read(&vdev->tcp_ack_hash.is_timer_running))) {
+		adf_os_hrtimer_start(&vdev->tcp_ack_hash.timer,
+			(ol_cfg_get_del_ack_timer_value(vdev->pdev->ctrl_pdev)*1000000));
+		adf_os_atomic_set(&vdev->tcp_ack_hash.is_timer_running, 1);
+	}
+
+	/* send packets */
+	if (node_to_be_remove) {
+		int tx_comp_req = vdev->pdev->cfg.default_tx_comp_req;
+		adf_nbuf_t msdu_list = NULL;
+
+		msdu_list = ol_tx_hl_base(vdev, ol_tx_spec_std,
+			node_to_be_remove->head, tx_comp_req, true);
+		if (msdu_list)
+			adf_nbuf_tx_free(msdu_list, 1/*error*/);
+		ol_txrx_vdev_free_tcp_node(vdev, node_to_be_remove);
+	}
+}
+
+/**
+ * ol_tx_hl_vdev_tcp_del_ack_timer() - delayed ack timer function
+ * @timer: timer handle
+ *
+ * Return: enum
+ */
+adf_os_enum_hrtimer_t
+ol_tx_hl_vdev_tcp_del_ack_timer(adf_os_hrtimer_t *timer)
+{
+	struct ol_txrx_vdev_t *vdev = container_of(timer, struct ol_txrx_vdev_t,
+							tcp_ack_hash.timer);
+
+	adf_os_enum_hrtimer_t ret = ADF_OS_HRTIMER_NORESTART;
+	adf_os_sched_bh(vdev->pdev->osdev, &vdev->tcp_ack_hash.tcp_del_ack_tq);
+	adf_os_atomic_set(&vdev->tcp_ack_hash.is_timer_running, 0);
+	return ret;
+}
+
+/**
+ * ol_tx_hl_del_ack_queue_flush_all() - drop all queued packets
+ * @vdev: vdev handle
+ *
+ * Return: none
+ */
+void ol_tx_hl_del_ack_queue_flush_all(struct ol_txrx_vdev_t *vdev)
+{
+	int i = 0;
+	struct tcp_stream_node *tcp_node_list = NULL;
+	struct tcp_stream_node *temp = NULL;
+
+	adf_os_hrtimer_cancel(&vdev->tcp_ack_hash.timer);
+	for (i = 0; i < OL_TX_HL_DEL_ACK_HASH_SIZE; i++) {
+		tcp_node_list = NULL;
+		adf_os_spin_lock_bh(&vdev->tcp_ack_hash.node[i].hash_node_lock);
+
+		if (vdev->tcp_ack_hash.node[i].no_of_entries)
+			tcp_node_list = vdev->tcp_ack_hash.node[i].head;
+
+		vdev->tcp_ack_hash.node[i].no_of_entries = 0;
+		vdev->tcp_ack_hash.node[i].head = NULL;
+		adf_os_spin_unlock_bh(&vdev->tcp_ack_hash.node[i].hash_node_lock);
+
+		/* free all packets */
+		while (tcp_node_list) {
+			temp = tcp_node_list;
+			tcp_node_list = temp->next;
+
+			adf_nbuf_tx_free(temp->head, 1/*error*/);
+			ol_txrx_vdev_free_tcp_node(vdev, temp);
+		}
+	}
+	ol_txrx_vdev_deinit_tcp_del_ack(vdev);
+}
+#endif
 
 #ifdef QCA_SUPPORT_TXRX_HL_BUNDLE
 /**
@@ -1025,6 +1990,48 @@ ol_tx_hl_vdev_bundle_timer(void *vdev)
  *
  * Return: NULL for success/drop msdu list
  */
+#ifdef QCA_SUPPORT_TXRX_DRIVER_TCP_DEL_ACK
+adf_nbuf_t
+ol_tx_hl_queue(struct ol_txrx_vdev_t *vdev, adf_nbuf_t msdu_list)
+{
+	struct ol_txrx_pdev_t *pdev = vdev->pdev;
+	int tx_comp_req = pdev->cfg.default_tx_comp_req;
+	struct packet_info pkt_info;
+
+	/* TCP ACK packet*/
+	if (ol_cfg_get_del_ack_enable_value(vdev->pdev->ctrl_pdev) &&
+		vdev->driver_del_ack_enabled) {
+
+		ol_tx_get_packet_info(msdu_list, &pkt_info);
+		if (pkt_info.type == TCP_PKT_ACK) {
+			ol_tx_hl_find_and_replace_tcp_ack(vdev, msdu_list, &pkt_info);
+			return NULL;
+		}
+	} else {
+		if (adf_os_atomic_read(&vdev->tcp_ack_hash.tcp_node_in_use_count))
+			ol_tx_hl_send_all_tcp_ack(vdev);
+	}
+
+	if (vdev->bundling_reqired == true &&
+		(ol_cfg_get_bundle_size(vdev->pdev->ctrl_pdev) > 1)) {
+		ol_tx_hl_vdev_queue_append(vdev, msdu_list);
+		if (pdev->total_bundle_queue_length >=
+			ol_cfg_get_bundle_size(vdev->pdev->ctrl_pdev)) {
+			return ol_tx_hl_pdev_queue_send_all(pdev);
+		}
+	} else {
+		if (vdev->bundle_queue.txq.depth != 0) {
+			ol_tx_hl_vdev_queue_append(vdev, msdu_list);
+			return ol_tx_hl_vdev_queue_send_all(vdev, true);
+		} else {
+			return ol_tx_hl_base(vdev, ol_tx_spec_std, msdu_list,
+							 tx_comp_req, true);
+		}
+	}
+
+	return NULL; /* all msdus were accepted */
+}
+#else
 adf_nbuf_t
 ol_tx_hl_queue(struct ol_txrx_vdev_t* vdev, adf_nbuf_t msdu_list)
 {
@@ -1050,17 +2057,57 @@ ol_tx_hl_queue(struct ol_txrx_vdev_t* vdev, adf_nbuf_t msdu_list)
 
 	return NULL; /* all msdus were accepted */
 }
+#endif
 
 #endif
 
+#ifdef QCA_SUPPORT_TXRX_DRIVER_TCP_DEL_ACK
 adf_nbuf_t
 ol_tx_hl(ol_txrx_vdev_handle vdev, adf_nbuf_t msdu_list)
 {
-    struct ol_txrx_pdev_t *pdev = vdev->pdev;
-    int tx_comp_req = pdev->cfg.default_tx_comp_req;
+	struct ol_txrx_pdev_t *pdev = vdev->pdev;
+	int tx_comp_req = pdev->cfg.default_tx_comp_req;
+	struct packet_info pkt_info;
+	adf_nbuf_t temp;
 
-    return ol_tx_hl_base(vdev, ol_tx_spec_std, msdu_list, tx_comp_req, true);
+	/* check Enable through ini */
+	if (!ol_cfg_get_del_ack_enable_value(vdev->pdev->ctrl_pdev)
+		|| (!vdev->driver_del_ack_enabled)) {
+
+		if (adf_os_atomic_read(&vdev->tcp_ack_hash.tcp_node_in_use_count))
+			ol_tx_hl_send_all_tcp_ack(vdev);
+
+		return ol_tx_hl_base(vdev, ol_tx_spec_std, msdu_list,
+							 tx_comp_req, true);
+	}
+
+	ol_tx_get_packet_info(msdu_list, &pkt_info);
+
+	if (pkt_info.type == TCP_PKT_NO_ACK) {
+		ol_tx_hl_find_and_send_tcp_stream(vdev, &pkt_info);
+		temp = ol_tx_hl_base(vdev, ol_tx_spec_std, msdu_list,
+							 tx_comp_req, true);
+		return temp;
+	} else if (pkt_info.type == TCP_PKT_ACK) {
+		ol_tx_hl_find_and_replace_tcp_ack(vdev, msdu_list, &pkt_info);
+		return NULL;
+	} else {
+		temp = ol_tx_hl_base(vdev, ol_tx_spec_std, msdu_list,
+							 tx_comp_req, true);
+		return temp;
+	}
 }
+#else
+adf_nbuf_t
+ol_tx_hl(ol_txrx_vdev_handle vdev, adf_nbuf_t msdu_list)
+{
+	struct ol_txrx_pdev_t *pdev = vdev->pdev;
+	int tx_comp_req = pdev->cfg.default_tx_comp_req;
+
+	return ol_tx_hl_base(vdev, ol_tx_spec_std, msdu_list,
+						 tx_comp_req, true);
+}
+#endif
 
 adf_nbuf_t
 ol_tx_non_std_hl(
@@ -1284,3 +2331,35 @@ adf_nbuf_t ol_tx_reinject(
 
     return NULL;
 }
+
+#ifdef MAC_NOTIFICATION_FEATURE
+/**
+ * ol_tx_failure_cb_set() - add TX failure callback
+ * @pdev: PDEV TXRX handle
+ * @tx_failure_cb: TX failure callback
+ */
+void
+ol_tx_failure_cb_set(struct ol_txrx_pdev_t *pdev,
+		     void (*tx_failure_cb)(void *ctx,
+					   unsigned int num_msdu,
+					   unsigned char tid,
+					   unsigned int status))
+{
+	pdev->tx_failure_cb = tx_failure_cb;
+}
+
+/**
+ * ol_tx_failure_indication() - indicate TX failure to user layer
+ * @pdev: Pdev TXRX handle
+ * @tid: TID
+ * @msdu_num: number of MSDUs with the same failure status
+ * @status: failure status
+ */
+void
+ol_tx_failure_indication(struct ol_txrx_pdev_t *pdev, uint8_t tid,
+			 uint32_t msdu_num, uint32_t status)
+{
+	if (pdev->tx_failure_cb && (status != htt_tx_status_ok))
+		pdev->tx_failure_cb(pdev, msdu_num, tid, status);
+}
+#endif

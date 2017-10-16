@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -278,8 +278,6 @@ enum eWniMsgTypes
 
     eWNI_SME_REGISTER_MGMT_FRAME_REQ,
 
-    eWNI_SME_COEX_IND,
-
 #ifdef FEATURE_WLAN_SCAN_PNO
     eWNI_SME_PREF_NETWORK_FOUND_IND,
 #endif // FEATURE_WLAN_SCAN_PNO
@@ -348,6 +346,7 @@ enum eWniMsgTypes
 #ifdef FEATURE_WLAN_CH_AVOID
     eWNI_SME_CH_AVOID_IND,
 #endif /* FEATURE_WLAN_CH_AVOID */
+    eWNI_SME_SET_SUB20_CH_WIDTH,
     /* DFS EVENTS */
     eWNI_SME_DFS_RADAR_FOUND, //RADAR found indication from DFS
     eWNI_SME_CHANNEL_CHANGE_REQ,//Channel Change Request from SAP
@@ -392,6 +391,7 @@ enum eWniMsgTypes
     eWNI_SME_DCC_GET_STATS_RSP,
     eWNI_SME_DCC_UPDATE_NDL_RSP,
     eWNI_SME_DCC_STATS_EVENT,
+    eWNI_SME_RADIO_CHAN_STATS_IND,
 
     eWNI_SME_TSF_EVENT,
     eWNI_SME_FW_DUMP_IND,
@@ -399,7 +399,8 @@ enum eWniMsgTypes
     eWNI_SME_EXT_CHANGE_CHANNEL,
     eWNI_SME_EXT_CHANGE_CHANNEL_IND,
     eWNI_SME_LOST_LINK_INFO_IND,
-    eWNI_SME_GET_RSSI_IND,
+    eWNI_SME_GET_PEER_INFO_IND,
+    eWNI_SME_GET_PEER_INFO_EXT_IND,
     eWNI_SME_ROAM_SCAN_OFFLOAD_REQ,
     eWNI_SME_SMPS_FORCE_MODE_IND,
     eWNI_SME_REGISTER_MGMT_FRAME_CB,
@@ -420,6 +421,10 @@ enum eWniMsgTypes
     eWNI_SME_NDP_END_IND,
     eWNI_SME_REGISTER_P2P_ACK_CB,
     eWNI_SME_UPDATE_ACCESS_POLICY_VENDOR_IE,
+    eWNI_SME_RX_AGGR_HOLE_IND,
+
+    /* Link layer statistics */
+    eWMI_SME_LL_STATS_IND,
 
     eWNI_SME_MSG_TYPES_END
 };

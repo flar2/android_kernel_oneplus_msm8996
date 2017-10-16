@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -126,8 +126,8 @@ limGetBssDescription( tpAniSirGlobal pMac, tSirBssDescription *pBssDescription,
         return eSIR_FAILURE;
 
     // Extract timer
-    vos_mem_copy( (tANI_U8 *) (&pBssDescription->scanSysTimeMsec),
-                  pBuf, sizeof(v_TIME_t));
+    vos_mem_copy( (tANI_U8 *) (&pBssDescription->scansystimensec),
+                               pBuf, sizeof(v_TIME_t));
     pBuf += sizeof(v_TIME_t);
     len  -= sizeof(v_TIME_t);
     if (limCheckRemainingLength(pMac, len) == eSIR_FAILURE)
@@ -290,6 +290,12 @@ limGetBssDescription( tpAniSirGlobal pMac, tSirBssDescription *pBssDescription,
     pBssDescription->tsf_delta = limGetU32(pBuf);
     pBuf += sizeof(tANI_U32);
     len  -= sizeof(tANI_U32);
+
+#ifdef WLAN_FEATURE_FILS_SK
+    vos_mem_copy(&pBssDescription->fils_info_element, pBuf, sizeof(struct fils_ind_elements));
+    pBuf += sizeof(struct fils_ind_elements);
+    len -= sizeof(struct fils_ind_elements);
+#endif
 
     if (len > 0)
     {
@@ -704,6 +710,9 @@ limStartBssReqSerDes(tpAniSirGlobal pMac, tpSirSmeStartBssReq pStartBssReq, tANI
     len -= sizeof(pStartBssReq->beacon_tx_rate);
     pBuf += sizeof(pStartBssReq->beacon_tx_rate);
 
+    pStartBssReq->sub20_channelwidth = *pBuf++;
+    len--;
+
     if (len)
     {
         limLog(pMac, LOGW, FL("Extra bytes left in SME_START_BSS_REQ, len=%d"), len);
@@ -957,6 +966,14 @@ limJoinReqSerDes(tpAniSirGlobal pMac, tpSirSmeJoinReq pJoinReq, tANI_U8 *pBuf)
     pBuf += sizeof(ePhyChanBondState);
     len -= sizeof(ePhyChanBondState);
 
+    if (limCheckRemainingLength(pMac, len) == eSIR_FAILURE)
+    {
+        limLog(pMac, LOGE, FL("remaining len %d is too short"), len);
+        return eSIR_FAILURE;
+    }
+    /* Extract force_24ghz_in_ht20 */
+    pJoinReq->force_24ghz_in_ht20 = *pBuf++;
+    len--;
     if (limCheckRemainingLength(pMac, len) == eSIR_FAILURE)
     {
         limLog(pMac, LOGE, FL("remaining len %d is too short"), len);
@@ -1334,6 +1351,17 @@ limJoinReqSerDes(tpAniSirGlobal pMac, tpSirSmeJoinReq pJoinReq, tANI_U8 *pBuf)
             pJoinReq->powerCap.minTxPower,
             pJoinReq->powerCap.maxTxPower,
             pJoinReq->supportedChannels.numChnl);)
+
+    if (pJoinReq->messageType == eWNI_SME_JOIN_REQ)
+    {
+        pJoinReq->sub20_channelwidth = *pBuf++;
+        len--;
+    }
+#ifdef WLAN_FEATURE_FILS_SK
+    vos_mem_copy(&pJoinReq->fils_con_info, pBuf, sizeof(struct cds_fils_connection_info));
+    pBuf += sizeof(struct cds_fils_connection_info);
+    len -= sizeof(struct cds_fils_connection_info);
+#endif
 
     // Extract uapsdPerAcBitmask
     pJoinReq->uapsdPerAcBitmask = *pBuf++;

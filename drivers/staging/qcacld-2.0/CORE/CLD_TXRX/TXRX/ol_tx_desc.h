@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011, 2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -102,6 +102,48 @@ ol_tx_desc_find(struct ol_txrx_pdev_t *pdev, u_int16_t tx_desc_id)
 		(pdev->tx_desc.desc_reserved_size *
 		(tx_desc_id & pdev->tx_desc.offset_filter))))->tx_desc;
 }
+
+/**
+ * @brief Use a tx descriptor ID to find the corresponding desriptor object
+ *    and add sanity check.
+ *
+ * @param pdev - the data physical device sending the data
+ * @param tx_desc_id - the ID of the descriptor in question
+ * @return the descriptor object that has the specified ID,
+ *    if failure, will return NULL.
+ */
+
+#ifdef QCA_SUPPORT_TXDESC_SANITY_CHECKS
+static inline struct ol_tx_desc_t *
+ol_tx_desc_find_check(struct ol_txrx_pdev_t *pdev, u_int16_t tx_desc_id)
+{
+    struct ol_tx_desc_t *tx_desc;
+
+    tx_desc = ol_tx_desc_find(pdev, tx_desc_id);
+
+    if (tx_desc->pkt_type == ol_tx_frm_freed) {
+        return NULL;
+    }
+
+    return tx_desc;
+}
+
+#else
+
+static inline struct ol_tx_desc_t *
+ol_tx_desc_find_check(struct ol_txrx_pdev_t *pdev, u_int16_t tx_desc_id)
+{
+    struct ol_tx_desc_t *tx_desc;
+
+    tx_desc = ol_tx_desc_find(pdev, tx_desc_id);
+
+    /* check against invalid tx_desc_id */
+    if (ol_cfg_is_high_latency(pdev->ctrl_pdev) && !tx_desc->vdev)
+        return NULL;
+
+    return tx_desc;
+}
+#endif
 
 /**
  * @brief Free a list of tx descriptors and the tx frames they refer to.

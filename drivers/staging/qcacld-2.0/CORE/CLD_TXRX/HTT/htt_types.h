@@ -376,7 +376,6 @@ struct htt_pdev_t {
 
     /* callback function for packetdump */
     tp_rx_pkt_dump_cb rx_pkt_dump_cb;
-
 };
 
 #endif /* _HTT_TYPES__H_ */

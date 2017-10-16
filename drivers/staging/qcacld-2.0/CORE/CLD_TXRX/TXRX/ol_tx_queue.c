@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -110,6 +110,9 @@ ol_tx_queue_vdev_flush(struct ol_txrx_pdev_t *pdev, struct ol_txrx_vdev_t *vdev)
     /* flush bundling queue */
     ol_tx_hl_queue_flush_all(vdev);
 
+    /* flush del_ack queue */
+    ol_tx_hl_del_ack_queue_flush_all(vdev);
+
     /* flush VDEV TX queues */
     for (i = 0; i < OL_TX_VDEV_NUM_QUEUES; i++) {
         txq = &vdev->txqs[i];
@@ -154,7 +157,7 @@ ol_tx_queue_vdev_flush(struct ol_txrx_pdev_t *pdev, struct ol_txrx_vdev_t *vdev)
                 }
             }
             TXRX_PRINT(TXRX_PRINT_LEVEL_ERR,
-                      "%s: Delete Peer %p\n", __func__, peer);
+                      "%s: Delete Peer %pK\n", __func__, peer);
             ol_txrx_peer_unref_delete(peers[i]);
         }
     } while (peer_count >= PEER_ARRAY_COUNT);
@@ -1163,7 +1166,7 @@ ol_txrx_vdev_flush(ol_txrx_vdev_handle vdev)
             adf_nbuf_set_next(vdev->ll_pause.txq.head, NULL);
             adf_nbuf_unmap(vdev->pdev->osdev, vdev->ll_pause.txq.head,
                            ADF_OS_DMA_TO_DEVICE);
-            adf_nbuf_tx_free(vdev->ll_pause.txq.head, 1 /* error */);
+            adf_nbuf_tx_free(vdev->ll_pause.txq.head, ADF_NBUF_PKT_ERROR);
             vdev->ll_pause.txq.head = next;
         }
         vdev->ll_pause.txq.tail = NULL;
@@ -1379,7 +1382,7 @@ ol_tx_queue_log_entry_type_info(
             struct ol_tx_log_queue_state_var_sz_t *record;
 
             align_pad =
-                (*align - ((((u_int32_t) type) + 1))) & (*align - 1);
+               (*align - (uint32_t)(((unsigned long) type) + 1)) & (*align - 1);
             record = (struct ol_tx_log_queue_state_var_sz_t *)
                 (type + 1 + align_pad);
             *size += record->num_cats_active *
@@ -1684,6 +1687,9 @@ ol_tx_queue_log_display(struct ol_txrx_pdev_t *pdev)
      * don't bother.
      */
     VOS_TRACE(VOS_MODULE_ID_TXRX, VOS_TRACE_LEVEL_ERROR,
+        "Current target credit: %d",
+        adf_os_atomic_read(&pdev->target_tx_credit));
+    VOS_TRACE(VOS_MODULE_ID_TXRX, VOS_TRACE_LEVEL_ERROR,
         "Tx queue log:");
     VOS_TRACE(VOS_MODULE_ID_TXRX, VOS_TRACE_LEVEL_ERROR,
         "      : Frames  Bytes  TID  PEER");
@@ -1851,7 +1857,7 @@ ol_tx_queue_display(struct ol_tx_frms_queue_t *txq, int indent)
 
     state = (txq->flag == ol_tx_queue_active) ? "active" : "paused";
     VOS_TRACE(VOS_MODULE_ID_TXRX, VOS_TRACE_LEVEL_INFO_LOW,
-        "%*stxq %p (%s): %d frms, %d bytes\n",
+        "%*stxq %pK (%s): %d frms, %d bytes\n",
         indent, " ", txq, state, txq->frms, txq->bytes);
 }
 
@@ -1861,7 +1867,7 @@ ol_tx_queues_display(struct ol_txrx_pdev_t *pdev)
     struct ol_txrx_vdev_t *vdev;
 
     VOS_TRACE(VOS_MODULE_ID_TXRX, VOS_TRACE_LEVEL_INFO_LOW,
-        "pdev %p tx queues:\n", pdev);
+        "pdev %pK tx queues:\n", pdev);
     TAILQ_FOREACH(vdev, &pdev->vdev_list, vdev_list_elem) {
         struct ol_txrx_peer_t *peer;
         int i;
@@ -1870,7 +1876,7 @@ ol_tx_queues_display(struct ol_txrx_pdev_t *pdev)
                 continue;
             }
             VOS_TRACE(VOS_MODULE_ID_TXRX, VOS_TRACE_LEVEL_INFO_LOW,
-                "  vdev %d (%p), txq %d\n", vdev->vdev_id, vdev, i);
+                "  vdev %d (%pK), txq %d\n", vdev->vdev_id, vdev, i);
             ol_tx_queue_display(&vdev->txqs[i], 4);
         }
         TAILQ_FOREACH(peer, &vdev->peer_list, peer_list_elem) {
@@ -1879,7 +1885,7 @@ ol_tx_queues_display(struct ol_txrx_pdev_t *pdev)
                     continue;
                 }
                 VOS_TRACE(VOS_MODULE_ID_TXRX, VOS_TRACE_LEVEL_INFO_LOW,
-                    "    peer %d (%p), txq %d\n",
+                    "    peer %d (%pK), txq %d\n",
                     peer->peer_ids[0], vdev, i);
                 ol_tx_queue_display(&peer->txqs[i], 6);
             }

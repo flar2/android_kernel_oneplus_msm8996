@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -51,6 +51,7 @@
 #endif
 
 #define WMI_MIN_HEAD_ROOM 64
+#define RADAR_WMI_EVENT_PENDING_MAX 1000
 
 #ifdef WMI_INTERFACE_EVENT_LOGGING
 /* WMI commands */
@@ -719,6 +720,35 @@ static u_int8_t* get_wmi_cmd_string(WMI_CMD_ID wmi_command)
 		CASE_RETURN_STRING(WMI_COEX_GET_ANTENNA_ISOLATION_CMDID);
 		CASE_RETURN_STRING(WMI_PDEV_SET_STATS_THRESHOLD_CMDID);
 		CASE_RETURN_STRING(WMI_REQUEST_WLAN_STATS_CMDID);
+		CASE_RETURN_STRING(WMI_VDEV_ENCRYPT_DECRYPT_DATA_REQ_CMDID);
+		CASE_RETURN_STRING(WMI_SAR_LIMITS_CMDID);
+		CASE_RETURN_STRING(WMI_PDEV_DFS_PHYERR_OFFLOAD_ENABLE_CMDID);
+		CASE_RETURN_STRING(WMI_PDEV_DFS_PHYERR_OFFLOAD_DISABLE_CMDID);
+		CASE_RETURN_STRING(WMI_VDEV_ADFS_CH_CFG_CMDID);
+		CASE_RETURN_STRING(WMI_VDEV_ADFS_OCAC_ABORT_CMDID);
+		CASE_RETURN_STRING(WMI_REQUEST_RCPI_CMDID);
+		CASE_RETURN_STRING(WMI_REQUEST_PEER_STATS_INFO_CMDID);
+		CASE_RETURN_STRING(WMI_SET_CURRENT_COUNTRY_CMDID);
+		CASE_RETURN_STRING(WMI_11D_SCAN_START_CMDID);
+		CASE_RETURN_STRING(WMI_11D_SCAN_STOP_CMDID);
+		CASE_RETURN_STRING(WMI_REQUEST_RADIO_CHAN_STATS_CMDID);
+		CASE_RETURN_STRING(WMI_ROAM_PER_CONFIG_CMDID);
+		CASE_RETURN_STRING(WMI_VDEV_ADD_MAC_ADDR_TO_RX_FILTER_CMDID);
+		CASE_RETURN_STRING(WMI_BPF_SET_VDEV_ACTIVE_MODE_CMDID);
+		CASE_RETURN_STRING(WMI_HW_DATA_FILTER_CMDID);
+		CASE_RETURN_STRING(WMI_PDEV_MULTIPLE_VDEV_RESTART_REQUEST_CMDID);
+		CASE_RETURN_STRING(WMI_LPI_OEM_REQ_CMDID);
+		CASE_RETURN_STRING(WMI_PDEV_UPDATE_PKT_ROUTING_CMDID);
+		CASE_RETURN_STRING(WMI_PDEV_CHECK_CAL_VERSION_CMDID);
+		CASE_RETURN_STRING(WMI_PDEV_SET_DIVERSITY_GAIN_CMDID);
+		CASE_RETURN_STRING(WMI_VDEV_SET_ARP_STAT_CMDID);
+		CASE_RETURN_STRING(WMI_VDEV_GET_ARP_STAT_CMDID);
+		CASE_RETURN_STRING(WMI_VDEV_GET_TX_POWER_CMDID);
+		CASE_RETURN_STRING(WMI_OFFCHAN_DATA_TX_SEND_CMDID);
+		CASE_RETURN_STRING(WMI_SET_INIT_COUNTRY_CMDID);
+		CASE_RETURN_STRING(WMI_SET_SCAN_DBS_DUTY_CYCLE_CMDID);
+		CASE_RETURN_STRING(WMI_PDEV_DIV_GET_RSSI_ANTID_CMDID);
+		CASE_RETURN_STRING(WMI_THERM_THROT_SET_CONF_CMDID);
 	}
 	return "Invalid WMI cmd";
 }
@@ -1068,13 +1098,25 @@ void wmi_control_rx(void *ctx, HTC_PACKET *htc_packet)
 	int tlv_ok_status = 0;
 	u_int32_t id;
 	u_int8_t *data;
+	tp_wma_handle wma = wmi_handle->scn_handle;
 
 	evt_buf = (wmi_buf_t) htc_packet->pPktContext;
 	id = WMI_GET_FIELD(adf_nbuf_data(evt_buf), WMI_CMD_HDR, COMMANDID);
 	/* TX_PAUSE EVENT should be handled with tasklet context */
-	if ((WMI_TX_PAUSE_EVENTID == id) ||
+	while ((WMI_TX_PAUSE_EVENTID == id) ||
 		(WMI_WOW_WAKEUP_HOST_EVENTID == id) ||
-		(WMI_D0_WOW_DISABLE_ACK_EVENTID == id)) {
+		(WMI_D0_WOW_DISABLE_ACK_EVENTID == id) ||
+		(WMI_DFS_RADAR_EVENTID == id)) {
+		if ((WMI_DFS_RADAR_EVENTID == id) && wma) {
+			if (adf_os_atomic_inc_return(
+					&wma->dfs_wmi_event_pending) <
+					RADAR_WMI_EVENT_PENDING_MAX) {
+				break;
+			} else {
+				adf_os_atomic_inc(&wma->dfs_wmi_event_dropped);
+				adf_os_atomic_dec(&wma->dfs_wmi_event_pending);
+			}
+		}
 		if (adf_nbuf_pull_head(evt_buf, sizeof(WMI_CMD_HDR)) == NULL)
 			return;
 
@@ -1097,8 +1139,9 @@ void wmi_control_rx(void *ctx, HTC_PACKET *htc_packet)
 			adf_nbuf_free(evt_buf);
 			return;
 		}
-		wmi_handle->event_handler[idx](wmi_handle->scn_handle,
-			       wmi_cmd_struct_ptr, len);
+		if (WMI_DFS_RADAR_EVENTID != id)
+			wmi_handle->event_handler[idx](wmi_handle->scn_handle,
+					wmi_cmd_struct_ptr, len);
 		wmitlv_free_allocated_event_tlvs(id, &wmi_cmd_struct_ptr);
 		adf_nbuf_free(evt_buf);
 		return;
@@ -1300,6 +1343,8 @@ void wmi_htc_tx_complete(void *ctx, HTC_PACKET *htc_pkt)
 {
 	struct wmi_unified *wmi_handle = (struct wmi_unified *)ctx;
 	wmi_buf_t wmi_cmd_buf = GET_HTC_PACKET_NET_BUF_CONTEXT(htc_pkt);
+	u_int8_t *buf_ptr;
+	u_int32_t len;
 #ifdef WMI_INTERFACE_EVENT_LOGGING
 	u_int32_t cmd_id;
 #endif
@@ -1315,6 +1360,9 @@ void wmi_htc_tx_complete(void *ctx, HTC_PACKET *htc_pkt)
 		((u_int32_t *)adf_nbuf_data(wmi_cmd_buf) + 2));
 	adf_os_spin_unlock_bh(&wmi_handle->wmi_record_lock);
 #endif
+	buf_ptr = (u_int8_t *) wmi_buf_data(wmi_cmd_buf);
+	len = adf_nbuf_len(wmi_cmd_buf);
+	OS_MEMZERO(buf_ptr, len);
 	adf_nbuf_free(wmi_cmd_buf);
 	adf_os_mem_free(htc_pkt);
 	adf_os_atomic_dec(&wmi_handle->pending_cmds);

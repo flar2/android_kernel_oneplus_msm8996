@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, 2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -1046,7 +1046,7 @@ struct ol_txrx_stats_req {
 
 #define wdi_in_debug(vdev, debug_specs) 0
 #define wdi_in_fw_stats_cfg(vdev, type, val) 0
-#define wdi_in_fw_stats_get(vdev, req) 0
+#define wdi_in_fw_stats_get(vdev, req, response_expected) 0
 #define wdi_in_aggr_cfg(vdev, max_subfrms_ampdu, max_subfrms_amsdu) 0
 
 #else /*---------------------------------------------------------------------*/
@@ -1060,7 +1060,8 @@ void wdi_in_fw_stats_cfg(
 
 int wdi_in_fw_stats_get(
     ol_txrx_vdev_handle vdev,
-    struct ol_txrx_stats_req *req);
+    struct ol_txrx_stats_req *req,
+    bool response_expected);
 
 int wdi_in_aggr_cfg(ol_txrx_vdev_handle vdev,
                      int max_subfrms_ampdu,
@@ -1274,6 +1275,7 @@ ol_tx_queue_log_display(ol_txrx_pdev_handle pdev);
 #define wdi_in_event_unsub wdi_event_unsub
 #define wdi_in_set_cfg_rx_fwd_disabled ol_set_cfg_rx_fwd_disabled
 #define wdi_in_set_cfg_pakcet_log_enabled ol_set_cfg_packet_log_enabled
+#define wdi_in_set_cfg_ptp_rx_opt_enabled ol_set_cfg_ptp_rx_opt_enabled
 
 #endif /* WDI_API_AS_FUNCS / MACROS */
 

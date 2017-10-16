@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -33,6 +33,25 @@
 
 \brief       Linux HDD TDLS include file
 ==========================================================================*/
+
+/**
+ * eTDLSSupportMode - TDLS support modes
+ * @eTDLS_SUPPORT_NOT_ENABLED: TDLS support not enabled
+ * @eTDLS_SUPPORT_DISABLED: suppress implicit trigger and not respond
+ *     to the peer
+ * @eTDLS_SUPPORT_EXPLICIT_TRIGGER_ONLY: suppress implicit trigger,
+ *     but respond to the peer
+ * @eTDLS_SUPPORT_ENABLED: implicit trigger
+ * @eTDLS_SUPPORT_EXTERNAL_CONTROL: implicit trigger but only to a
+ *     peer mac configured by user space.
+ */
+typedef enum {
+    eTDLS_SUPPORT_NOT_ENABLED = 0,
+    eTDLS_SUPPORT_DISABLED,
+    eTDLS_SUPPORT_EXPLICIT_TRIGGER_ONLY,
+    eTDLS_SUPPORT_ENABLED,
+    eTDLS_SUPPORT_EXTERNAL_CONTROL
+} eTDLSSupportMode;
 
 #ifdef FEATURE_WLAN_TDLS
 
@@ -82,6 +101,22 @@ should not be more than 2000 */
 #define MAX_TDLS_DISCOVERY_CYCLE_RETRIES      2
 #define MIN_TDLS_DISCOVERY_CYCLE_RETRY_TIME  (5 * 60 * 1000)    /* 5 minutes */
 
+/**
+ * enum tdls_disable_source - TDLS disable sources
+ * @HDD_SET_TDLS_MODE_SOURCE_USER: disable from user
+ * @HDD_SET_TDLS_MODE_SOURCE_SCAN: disable during scan
+ * @HDD_SET_TDLS_MODE_SOURCE_OFFCHANNEL: disable during offchannel
+ * @HDD_SET_TDLS_MODE_SOURCE_BTC: disable during bluetooth
+ * @HDD_SET_TDLS_MODE_SOURCE_P2P: disable during p2p
+ */
+enum tdls_disable_source {
+    HDD_SET_TDLS_MODE_SOURCE_USER = 0,
+    HDD_SET_TDLS_MODE_SOURCE_SCAN,
+    HDD_SET_TDLS_MODE_SOURCE_OFFCHANNEL,
+    HDD_SET_TDLS_MODE_SOURCE_BTC,
+    HDD_SET_TDLS_MODE_SOURCE_P2P,
+};
+
 typedef struct
 {
     tANI_U32    tdls;
@@ -109,17 +144,6 @@ typedef struct
     int reject;
     struct delayed_work tdls_scan_work;
 } tdls_scan_context_t;
-
-typedef enum {
-    eTDLS_SUPPORT_NOT_ENABLED = 0,
-    eTDLS_SUPPORT_DISABLED, /* suppress implicit trigger and not respond to the peer */
-    eTDLS_SUPPORT_EXPLICIT_TRIGGER_ONLY, /* suppress implicit trigger, but respond to the peer */
-    eTDLS_SUPPORT_ENABLED, /* implicit trigger */
-    /* External control means implicit trigger
-     * but only to a peer mac configured by user space.
-     */
-    eTDLS_SUPPORT_EXTERNAL_CONTROL
-} eTDLSSupportMode;
 
 enum tdls_spatial_streams {
     TDLS_NSS_1x1_MODE = 0,
@@ -243,6 +267,7 @@ typedef struct {
     tANI_U32        discovery_sent_cnt;
     tANI_S8         ap_rssi;
     struct _hddTdlsPeer_t  *curr_candidate;
+    bool is_tdls_disabled_bmps;
     v_U32_t            magic;
 } tdlsCtx_t;
 
@@ -330,14 +355,16 @@ hddTdlsPeer_t *wlan_hdd_tdls_find_all_peer(hdd_context_t *pHddCtx,
 int wlan_hdd_tdls_get_link_establish_params(hdd_adapter_t *pAdapter,
                                             const u8 *mac,
                                             tCsrTdlsLinkEstablishParams* tdlsLinkEstablishParams);
-hddTdlsPeer_t *wlan_hdd_tdls_get_peer(hdd_adapter_t *pAdapter, const u8 *mac);
+hddTdlsPeer_t *wlan_hdd_tdls_get_peer(hdd_adapter_t *pAdapter, const u8 *mac,
+                                      bool need_lock);
 
 int wlan_hdd_tdls_set_cap(hdd_adapter_t *pAdapter, const u8* mac,
                           tTDLSCapType cap);
 
 void wlan_hdd_tdls_set_peer_link_status(hddTdlsPeer_t *curr_peer,
                                         tTDLSLinkStatus status,
-                                        tTDLSLinkReason reason);
+                                        tTDLSLinkReason reason,
+                                        bool need_lock);
 void wlan_hdd_tdls_set_link_status(hdd_adapter_t *pAdapter,
                                    const u8* mac,
                                    tTDLSLinkStatus linkStatus,
@@ -383,7 +410,7 @@ void wlan_hdd_tdls_check_bmps(hdd_adapter_t *pAdapter);
 
 hddTdlsPeer_t *wlan_hdd_tdls_is_progress(hdd_context_t *pHddCtx,
                                          const u8* mac,
-                                         u8 skip_self);
+                                         u8 skip_self, bool need_lock);
 
 int wlan_hdd_tdls_copy_scan_context(hdd_context_t *pHddCtx,
                             struct wiphy *wiphy,
@@ -486,7 +513,9 @@ int hdd_set_tdls_scan_type(hdd_context_t *hdd_ctx, int val);
 int wlan_hdd_tdls_antenna_switch(hdd_context_t *hdd_ctx,
 					hdd_adapter_t *adapter,
 					uint32_t mode);
-
+void wlan_hdd_change_tdls_mode(void *hdd_ctx);
+void wlan_hdd_start_stop_tdls_source_timer(hdd_context_t *pHddCtx,
+				eTDLSSupportMode tdls_mode);
 
 #else
 static inline void hdd_tdls_notify_mode_change(hdd_adapter_t *pAdapter,
@@ -510,6 +539,16 @@ static inline int wlan_hdd_tdls_antenna_switch(hdd_context_t *hdd_ctx,
 {
 	return 0;
 }
+static inline void
+wlan_hdd_change_tdls_mode(void *hdd_ctx)
+{
+}
+static inline void
+wlan_hdd_start_stop_tdls_source_timer(hdd_context_t *pHddCtx,
+				eTDLSSupportMode tdls_mode)
+{
+}
+
 #endif
 
 #endif // __HDD_TDSL_H

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2014,2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2014,2016-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -27,10 +27,30 @@
 
 #include <ol_cfg.h>
 #include <ol_if_athvar.h>
+#include <vos_types.h>
+#include <vos_getBin.h>
 
 unsigned int vow_config = 0;
 module_param(vow_config, uint, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(vow_config, "Do VoW Configuration");
+
+#ifdef QCA_SUPPORT_TXRX_DRIVER_TCP_DEL_ACK
+/**
+ * ol_cfg_update_del_ack_params() - update delayed ack params
+ *
+ * @cfg_ctx: cfg context
+ * @cfg_param: parameters
+ *
+ * Return: none
+ */
+void ol_cfg_update_del_ack_params(struct txrx_pdev_cfg_t *cfg_ctx,
+				struct txrx_pdev_cfg_param_t cfg_param)
+{
+	cfg_ctx->del_ack_enable = cfg_param.del_ack_enable;
+	cfg_ctx->del_ack_timer_value = cfg_param.del_ack_timer_value;
+	cfg_ctx->del_ack_pkt_count = cfg_param.del_ack_pkt_count;
+}
+#endif
 
 #ifdef QCA_SUPPORT_TXRX_HL_BUNDLE
 /**
@@ -94,7 +114,10 @@ ol_pdev_handle ol_pdev_cfg_attach(adf_os_device_t osdev,
 	cfg_ctx->max_peer_id = 511;
 	cfg_ctx->max_vdev = CFG_TGT_NUM_VDEV;
 	cfg_ctx->pn_rx_fwd_check = 1;
-	cfg_ctx->frame_type = wlan_frm_fmt_802_3;
+	if (VOS_MONITOR_MODE == vos_get_conparam())
+		cfg_ctx->frame_type = wlan_frm_fmt_raw;
+	else
+		cfg_ctx->frame_type = wlan_frm_fmt_802_3;
 	cfg_ctx->max_thruput_mbps = 800;
 	cfg_ctx->max_nbuf_frags = 1;
 	cfg_ctx->vow_config = vow_config;
@@ -106,6 +129,9 @@ ol_pdev_handle ol_pdev_cfg_attach(adf_os_device_t osdev,
 	cfg_ctx->dutycycle_level[3] = THROTTLE_DUTY_CYCLE_LEVEL3;
 	cfg_ctx->rx_fwd_disabled = 0;
 	cfg_ctx->is_packet_log_enabled = 0;
+#ifdef WLAN_FEATURE_TSF_PLUS
+	cfg_ctx->is_ptp_rx_opt_enabled = 0;
+#endif
 	cfg_ctx->is_full_reorder_offload = cfg_param.is_full_reorder_offload;
 #ifdef IPA_UC_OFFLOAD
 	cfg_ctx->ipa_uc_rsc.uc_offload_enabled = cfg_param.is_uc_offload_enabled;
@@ -116,6 +142,8 @@ ol_pdev_handle ol_pdev_cfg_attach(adf_os_device_t osdev,
 #endif /* IPA_UC_OFFLOAD */
 
 	ol_cfg_update_bundle_params(cfg_ctx, cfg_param);
+	ol_cfg_update_del_ack_params(cfg_ctx, cfg_param);
+	ol_cfg_update_ptp_params(cfg_ctx, cfg_param);
 
 	for (i = 0; i < OL_TX_NUM_WMM_AC; i++) {
 		cfg_ctx->ac_specs[i].wrr_skip_weight =
@@ -132,6 +160,47 @@ ol_pdev_handle ol_pdev_cfg_attach(adf_os_device_t osdev,
 
 	return (ol_pdev_handle) cfg_ctx;
 }
+
+#ifdef QCA_SUPPORT_TXRX_DRIVER_TCP_DEL_ACK
+/**
+ * ol_cfg_get_del_ack_timer_value() - get delayed ack timer value
+ * @pdev: pdev handle
+ *
+ * Return: timer value
+ */
+int ol_cfg_get_del_ack_timer_value(ol_pdev_handle pdev)
+{
+	struct txrx_pdev_cfg_t *cfg = (struct txrx_pdev_cfg_t *)pdev;
+
+	return cfg->del_ack_timer_value;
+}
+
+/**
+ * ol_cfg_get_del_ack_enable_value() - get delayed ack enable value
+ * @pdev: pdev handle
+ *
+ * Return: enable/disable
+ */
+int ol_cfg_get_del_ack_enable_value(ol_pdev_handle pdev)
+{
+	struct txrx_pdev_cfg_t *cfg = (struct txrx_pdev_cfg_t *)pdev;
+
+	return cfg->del_ack_enable;
+}
+
+/**
+ * ol_cfg_get_del_ack_count_value() - get delayed ack count value
+ * @pdev: pdev handle
+ *
+ * Return: count value
+ */
+int ol_cfg_get_del_ack_count_value(ol_pdev_handle pdev)
+{
+	struct txrx_pdev_cfg_t *cfg = (struct txrx_pdev_cfg_t *)pdev;
+
+	return cfg->del_ack_pkt_count;
+}
+#endif
 
 #ifdef QCA_SUPPORT_TXRX_HL_BUNDLE
 /**
@@ -210,6 +279,46 @@ u_int8_t ol_cfg_is_packet_log_enabled(ol_pdev_handle pdev)
 	struct txrx_pdev_cfg_t *cfg = (struct txrx_pdev_cfg_t *)pdev;
 	return cfg->is_packet_log_enabled;
 }
+
+#ifdef WLAN_FEATURE_TSF_PLUS
+void ol_set_cfg_ptp_rx_opt_enabled(ol_pdev_handle pdev, u_int8_t val)
+{
+	struct txrx_pdev_cfg_t *cfg = (struct txrx_pdev_cfg_t *)pdev;
+
+	cfg->is_ptp_rx_opt_enabled = val;
+}
+
+u_int8_t ol_cfg_is_ptp_rx_opt_enabled(ol_pdev_handle pdev)
+{
+	struct txrx_pdev_cfg_t *cfg = (struct txrx_pdev_cfg_t *)pdev;
+
+	return cfg->is_ptp_rx_opt_enabled;
+}
+/**
+ * ol_cfg_is_ptp_enabled() - check if ptp feature is enabled
+ * @pdev: cfg handle to PDEV
+ *
+ * Return: is_ptp_enabled
+ */
+a_bool_t ol_cfg_is_ptp_enabled(ol_pdev_handle pdev)
+{
+	struct txrx_pdev_cfg_t *cfg = (struct txrx_pdev_cfg_t *)pdev;
+
+	return cfg->is_ptp_enabled;
+}
+/**
+ * ol_cfg_update_ptp_params() - update ptp params
+ * @cfg_ctx: cfg context
+ * @cfg_param: parameters
+ *
+ * Return: none
+ */
+void ol_cfg_update_ptp_params(struct txrx_pdev_cfg_t *cfg_ctx,
+				struct txrx_pdev_cfg_param_t cfg_param)
+{
+	cfg_ctx->is_ptp_enabled = cfg_param.is_ptp_enabled;
+}
+#endif
 
 int ol_cfg_rx_fwd_disabled(ol_pdev_handle pdev)
 {

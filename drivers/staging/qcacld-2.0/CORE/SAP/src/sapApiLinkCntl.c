@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -139,6 +139,7 @@ WLANSAP_ScanCallback
     tWLAN_SAPEvent sapEvent; /* State machine event */
     v_U8_t operChannel = 0;
     VOS_STATUS sapstatus;
+    tCsrRoamInfo *roam_info = NULL;
     tpAniSirGlobal pMac = NULL;
     v_U32_t event;
 
@@ -211,48 +212,62 @@ WLANSAP_ScanCallback
             VOS_TRACE( VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_HIGH, "In %s, CSR scanStatus = %s (%d)", __func__, "eCSR_SCAN_ABORT/FAILURE", scanStatus);
     }
 
-    if (operChannel == SAP_CHANNEL_NOT_SELECTED)
+    if (psapContext->sapsMachine != eSAP_STARTED) {
+        if (operChannel == SAP_CHANNEL_NOT_SELECTED)
 #ifdef SOFTAP_CHANNEL_RANGE
-    {
-        VOS_TRACE( VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_HIGH,
-             "%s: No suitable channel selected due to DFS, LTE-Coex and "
-             "Concurrent mode restrictions", __func__);
-
-        if ( eCSR_BAND_ALL ==  psapContext->scanBandPreference ||
-                     psapContext->allBandScanned == eSAP_TRUE)
         {
-            psapContext->sapsMachine = eSAP_CH_SELECT;
-            event = eSAP_CHANNEL_SELECTION_FAILED;
+            VOS_TRACE(VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_HIGH,
+                      "%s: No suitable channel selected due to DFS, LTE-Coex and Concurrent mode restrictions", __func__);
+
+            if (eCSR_BAND_ALL == psapContext->scanBandPreference ||
+                psapContext->allBandScanned == eSAP_TRUE) {
+                psapContext->sapsMachine = eSAP_CH_SELECT;
+                event = eSAP_CHANNEL_SELECTION_FAILED;
+            } else {
+                VOS_TRACE(VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO,
+                          "%s: Has scan band preference",
+                          __func__);
+                if (eCSR_BAND_24 == psapContext->currentPreferredBand)
+                    psapContext->currentPreferredBand = eCSR_BAND_5G;
+                else
+                    psapContext->currentPreferredBand = eCSR_BAND_24;
+
+                psapContext->allBandScanned = eSAP_TRUE;
+                /* go back to DISCONNECT state, scan next band */
+                psapContext->sapsMachine = eSAP_DISCONNECTED;
+                event = eSAP_CHANNEL_SELECTION_RETRY;
+            }
         }
-        else
-        {
-            VOS_TRACE( VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO,
-             "%s: Has scan band preference",
-             __func__);
-            if (eCSR_BAND_24 == psapContext->currentPreferredBand)
-                psapContext->currentPreferredBand = eCSR_BAND_5G;
-            else
-                psapContext->currentPreferredBand = eCSR_BAND_24;
-
-            psapContext->allBandScanned = eSAP_TRUE;
-            //go back to DISCONNECT state, scan next band
-            psapContext->sapsMachine = eSAP_DISCONNECTED;
-            event = eSAP_CHANNEL_SELECTION_RETRY;
-         }
-    }
 #else
-        psapContext->channel = SAP_DEFAULT_24GHZ_CHANNEL;
+            psapContext->channel = SAP_DEFAULT_24GHZ_CHANNEL;
 #endif
-    else
-    {
-        psapContext->channel = operChannel;
+        else
+            psapContext->channel = operChannel;
+
+        sme_SelectCBMode(halHandle,
+                         psapContext->csrRoamProfile.phyMode,
+                         psapContext->channel, psapContext->secondary_ch,
+                         &psapContext->vht_channel_width,
+                         psapContext->ch_width_orig);
+
+        VOS_TRACE(VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_HIGH,
+                  "In %s, Channel selected = %d", __func__,
+                  psapContext->channel);
+    } else {
+        psapContext->channel = psapContext->backup_channel;
+
+        roam_info = vos_mem_malloc(sizeof(*roam_info));
+        if (!roam_info) {
+            VOS_TRACE(VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_ERROR,
+                      FL("Memory allocation failure!"));
+        } else {
+            roam_info->target_channel = operChannel;
+            VOS_TRACE(VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_HIGH,
+                      "In %s, Channel selected = %d", __func__,
+                      roam_info->target_channel);
+        }
     }
 
-    sme_SelectCBMode(halHandle,
-                     psapContext->csrRoamProfile.phyMode,
-                     psapContext->channel, psapContext->secondary_ch,
-                     &psapContext->vht_channel_width,
-                     psapContext->ch_width_orig);
 #ifdef SOFTAP_CHANNEL_RANGE
     if(psapContext->channelList != NULL)
     {
@@ -260,20 +275,21 @@ WLANSAP_ScanCallback
          * the result */
         vos_mem_free(psapContext->channelList);
         psapContext->channelList = NULL;
+        psapContext->num_of_channel = 0;
     }
 #endif
 
-    VOS_TRACE( VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_HIGH, "In %s, Channel selected = %d", __func__, psapContext->channel);
-
     /* Fill in the event structure */
     sapEvent.event = event;
-    sapEvent.params = 0;        // pCsrRoamInfo;
+    sapEvent.params = roam_info;
     sapEvent.u1 = scanStatus;   // roamstatus
     sapEvent.u2 = 0;            // roamResult
 
     /* Handle event */
     sapstatus = sapFsm(psapContext, &sapEvent);
 
+    if (roam_info)
+        vos_mem_free(roam_info);
     return sapstatus;
 }// WLANSAP_ScanCallback
 
@@ -478,7 +494,7 @@ WLANSAP_PreStartBssAcsScanCallback
             }
         }
 #else
-        psapContext->channel = SAP_DEFAULT_24GHZ_CHANNEL;
+        psapContext->channel = sap_select_default_oper_chan_ini(halHandle, 0);
 #endif
         else
         {
@@ -501,6 +517,7 @@ WLANSAP_PreStartBssAcsScanCallback
              */
             vos_mem_free(psapContext->channelList);
             psapContext->channelList = NULL;
+            psapContext->num_of_channel = 0;
         }
 #endif
 
@@ -518,16 +535,28 @@ WLANSAP_PreStartBssAcsScanCallback
     }
     else
     {
+#ifdef SOFTAP_CHANNEL_RANGE
+        if(psapContext->channelList != NULL)
+        {
+            /*
+             * Always free up the memory for
+             * channel selection whatever
+             * the result
+             */
+            vos_mem_free(psapContext->channelList);
+            psapContext->channelList = NULL;
+            psapContext->num_of_channel = 0;
+        }
+#endif
+
         VOS_TRACE( VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_ERROR,
                    FL("CSR scanStatus = %s (%d), choose default channel"),
                    "eCSR_SCAN_ABORT/FAILURE", scanStatus );
 #ifdef SOFTAP_CHANNEL_RANGE
-        if(psapContext->acs_cfg->hw_mode == eCSR_DOT11_MODE_11a)
-            psapContext->channel = SAP_DEFAULT_5GHZ_CHANNEL;
-        else
-            psapContext->channel = SAP_DEFAULT_24GHZ_CHANNEL;
+        psapContext->channel = sap_select_default_oper_chan_ini(halHandle,
+                                         psapContext->acs_cfg->hw_mode);
 #else
-        psapContext->channel = SAP_DEFAULT_24GHZ_CHANNEL;
+        psapContext->channel = sap_select_default_oper_chan_ini(halHandle, 0);
 #endif
         halStatus = sapSignalHDDevent(psapContext, NULL,
                                       eSAP_ACS_CHANNEL_SELECTED,
@@ -756,7 +785,7 @@ WLANSAP_RoamCallback
                         pSapContext = pMac->sap.sapCtxList[intf].pSapContext;
                         VOS_TRACE(VOS_MODULE_ID_SAP,
                                   VOS_TRACE_LEVEL_ERROR,
-                        "sapdfs: no available channel for sapctx[%p], StopBss",
+                        "sapdfs: no available channel for sapctx[%pK], StopBss",
                                   pSapContext);
 
                         WLANSAP_StopBss(pSapContext);
@@ -1210,7 +1239,7 @@ WLANSAP_RoamCallback
                                       pMac->sap.sapCtxList[intf].pSapContext;
                                       VOS_TRACE(VOS_MODULE_ID_SAP,
                                                 VOS_TRACE_LEVEL_INFO_MED,
-                                    "sapdfs:issue chnl change for sapctx[%p]",
+                                    "sapdfs:issue chnl change for sapctx[%pK]",
                                                 pSapContext);
                                    /* Send channel switch request */
                                    sapEvent.event = eWNI_SME_CHANNEL_CHANGE_REQ;
@@ -1226,7 +1255,7 @@ WLANSAP_RoamCallback
                                        halStatus = eHAL_STATUS_FAILURE;
                                        VOS_TRACE(VOS_MODULE_ID_SAP,
                                                  VOS_TRACE_LEVEL_ERROR,
-                                       FL("post chnl chng req failed, sap[%p]"),
+                                       FL("post chnl chng req failed, sap[%pK]"),
                                        sapContext);
                                    }
                                    else
@@ -1241,7 +1270,7 @@ WLANSAP_RoamCallback
                      else
                      {
                          VOS_TRACE(VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_MED,
-                         FL("sapdfs: sapctx[%p] ready but not concurrent sap"),
+                         FL("sapdfs: sapctx[%pK] ready but not concurrent sap"),
                          sapContext);
 
                          halStatus = eHAL_STATUS_SUCCESS;
@@ -1302,7 +1331,7 @@ WLANSAP_RoamCallback
                       sapContext->sapsMachine = eSAP_DISCONNECTED;
 
                       VOS_TRACE(VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_MED,
-                      "sapdfs: from state %s => %s with ignore cac FALSE on sapctx[%p]",
+                      "sapdfs: from state %s => %s with ignore cac FALSE on sapctx[%pK]",
                       "eSAP_DISCONNECTING", "DISCONNECTED", sapContext);
 
                       /* DFS Channel */
@@ -1314,7 +1343,7 @@ WLANSAP_RoamCallback
                    else
                    {
                       VOS_TRACE(VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_MED,
-                      "sapdfs: from state %s => %s with ignore cac TRUE on sapctx[%p]",
+                      "sapdfs: from state %s => %s with ignore cac TRUE on sapctx[%pK]",
                       "eSAP_DISCONNECTING", "eSAP_STARTING", sapContext);
 
                       /* Start beaconing on the new channel */
@@ -1330,7 +1359,7 @@ WLANSAP_RoamCallback
                else
                {
                   VOS_TRACE(VOS_MODULE_ID_SAP, VOS_TRACE_LEVEL_INFO_MED,
-                  "sapdfs: from state %s => %s on sapctx[%p]",
+                  "sapdfs: from state %s => %s on sapctx[%pK]",
                   "eSAP_DISCONNECTING", "eSAP_STARTING", sapContext);
 
                   /* non-DFS channel */

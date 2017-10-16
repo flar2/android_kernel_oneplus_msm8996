@@ -58,8 +58,15 @@ qca_wlan_vendor_ndp_policy[QCA_WLAN_VENDOR_ATTR_NDP_PARAMS_MAX + 1] = {
 					.len = VOS_MAC_ADDR_SIZE },
 	[QCA_WLAN_VENDOR_ATTR_NDP_INSTANCE_ID_ARRAY] = { .type = NLA_BINARY,
 					.len = NDP_NUM_INSTANCE_ID },
-	[QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE] = { .type = NLA_U32 },
+	[QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE] = { .type =
+								NLA_U32 },
 	[QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_VALUE] = { .type = NLA_U32 },
+	[QCA_WLAN_VENDOR_ATTR_NDP_CHANNEL_CONFIG] = { .type = NLA_U32 },
+	[QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE] = { .type = NLA_U32 },
+	[QCA_WLAN_VENDOR_ATTR_NDP_PMK] = { .type = NLA_BINARY,
+					.len = NDP_PMK_LEN },
+	[QCA_WLAN_VENDOR_ATTR_NDP_SCID] = { .type = NLA_BINARY,
+					.len = NDP_SCID_BUF_LEN },
 };
 
 /**
@@ -387,6 +394,7 @@ static int hdd_ndi_delete_req_handler(hdd_context_t *hdd_ctx,
 	uint16_t transaction_id;
 	struct nan_datapath_ctx *ndp_ctx;
 	int ret;
+	hdd_station_ctx_t *sta_ctx;
 
 	ENTER();
 
@@ -426,12 +434,24 @@ static int hdd_ndi_delete_req_handler(hdd_context_t *hdd_ctx,
 		return -EINVAL;
 	}
 
+	sta_ctx = WLAN_HDD_GET_STATION_CTX_PTR(adapter);
+	if (!sta_ctx) {
+		hddLog(LOGE, FL("sta_ctx is NULL"));
+		return -EINVAL;
+	}
+
 	/* check if there are active peers on the adapter */
 	if (ndp_ctx->active_ndp_peers > 0) {
 		hddLog(LOGE, FL("NDP peers active: %d, cannot delete NDI"),
 			ndp_ctx->active_ndp_peers);
 		return -EINVAL;
 	}
+
+	/*
+	 * Since, the interface is being deleted, remove the
+	 */
+	hdd_ctx->sta_to_adapter[sta_ctx->broadcast_staid] = 0;
+	sta_ctx->broadcast_staid = HDD_WLAN_INVALID_STA_ID;
 
 	ndp_ctx->ndp_delete_transaction_id = transaction_id;
 	ndp_ctx->state = NAN_DATA_NDI_DELETING_STATE;
@@ -450,6 +470,18 @@ static int hdd_ndi_delete_req_handler(hdd_context_t *hdd_ctx,
  * hdd_ndp_initiator_req_handler() - NDP initiator request handler
  * @hdd_ctx: hdd context
  * @tb: parsed NL attribute list
+ *
+ * tb will contain following vendor attributes:
+ * QCA_WLAN_VENDOR_ATTR_NDP_IFACE_STR
+ * QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID
+ * QCA_WLAN_VENDOR_ATTR_NDP_CHANNEL - optional
+ * QCA_WLAN_VENDOR_ATTR_NDP_CHANNEL_CONFIG
+ * QCA_WLAN_VENDOR_ATTR_NDP_SERVICE_INSTANCE_ID
+ * QCA_WLAN_VENDOR_ATTR_NDP_PEER_DISCOVERY_MAC_ADDR
+ * QCA_WLAN_VENDOR_ATTR_NDP_APP_INFO - optional
+ * QCA_WLAN_VENDOR_ATTR_NDP_CONFIG_QOS - optional
+ * QCA_WLAN_VENDOR_ATTR_NDP_PMK - optional
+ * QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE - optional
  *
  * Return:  0 on success or error code on failure
  */
@@ -506,12 +538,17 @@ static int hdd_ndp_initiator_req_handler(hdd_context_t *hdd_ctx,
 	req.transaction_id =
 		nla_get_u16(tb[QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID]);
 
-	if (!tb[QCA_WLAN_VENDOR_ATTR_NDP_CHANNEL]) {
-		hddLog(LOGE, FL("NDP channel is unavailable"));
+	if (tb[QCA_WLAN_VENDOR_ATTR_NDP_CHANNEL])
+		req.channel =
+			nla_get_u32(tb[QCA_WLAN_VENDOR_ATTR_NDP_CHANNEL]);
+
+	if (tb[QCA_WLAN_VENDOR_ATTR_NDP_CHANNEL_CONFIG]) {
+		req.channel_cfg =
+			nla_get_u32(tb[QCA_WLAN_VENDOR_ATTR_NDP_CHANNEL_CONFIG]);
+	} else {
+		hddLog(LOGE, FL("Channel config is unavailable"));
 		return -EINVAL;
 	}
-	req.channel =
-		nla_get_u16(tb[QCA_WLAN_VENDOR_ATTR_NDP_CHANNEL]);
 
 	if (!tb[QCA_WLAN_VENDOR_ATTR_NDP_SERVICE_INSTANCE_ID]) {
 		hddLog(LOGE, FL("NDP service instance ID is unavailable"));
@@ -546,10 +583,31 @@ static int hdd_ndp_initiator_req_handler(hdd_context_t *hdd_ctx,
 			nla_get_u32(tb[QCA_WLAN_VENDOR_ATTR_NDP_CONFIG_QOS]);
 	}
 
-	hddLog(LOG1, FL("vdev_id: %d, transaction_id: %d, channel: %d, service_instance_id: %d, ndp_app_info_len: %d, peer_discovery_mac_addr: %pM"),
+	if (tb[QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE] &&
+		!tb[QCA_WLAN_VENDOR_ATTR_NDP_PMK]) {
+		hddLog(LOGE, FL("PMK cannot be absent when CSID is present."));
+		return -EINVAL;
+	}
+
+	if (tb[QCA_WLAN_VENDOR_ATTR_NDP_PMK]) {
+		req.pmk.pmk = nla_data(tb[QCA_WLAN_VENDOR_ATTR_NDP_PMK]);
+		req.pmk.pmk_len = nla_len(tb[QCA_WLAN_VENDOR_ATTR_NDP_PMK]);
+		VOS_TRACE_HEX_DUMP(VOS_MODULE_ID_HDD,
+				VOS_TRACE_LEVEL_DEBUG,
+				req.pmk.pmk, req.pmk.pmk_len);
+	}
+
+	if (tb[QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE]) {
+		req.ncs_sk_type =
+			nla_get_u32(tb[QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE]);
+
+	}
+
+	hddLog(LOG1,
+		FL("vdev_id: %d, transaction_id: %d, channel: %d, service_instance_id: %d, ndp_app_info_len: %d, csid: %d, peer_discovery_mac_addr: %pM"),
 		req.vdev_id, req.transaction_id, req.channel,
 		req.service_instance_id, req.ndp_info.ndp_app_info_len,
-		req.peer_discovery_mac_addr.bytes);
+		req.ncs_sk_type, req.peer_discovery_mac_addr.bytes);
 	status = sme_ndp_initiator_req_handler(hal, &req);
 	if (status != VOS_STATUS_SUCCESS) {
 		hddLog(LOGE,
@@ -565,6 +623,16 @@ static int hdd_ndp_initiator_req_handler(hdd_context_t *hdd_ctx,
  * hdd_ndp_responder_req_handler() - NDP responder request handler
  * @hdd_ctx: hdd context
  * @tb: parsed NL attribute list
+ *
+ * tb includes following vendor attributes:
+ * QCA_WLAN_VENDOR_ATTR_NDP_IFACE_STR
+ * QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID
+ * QCA_WLAN_VENDOR_ATTR_NDP_INSTANCE_ID
+ * QCA_WLAN_VENDOR_ATTR_NDP_RESPONSE_CODE
+ * QCA_WLAN_VENDOR_ATTR_NDP_APP_INFO - optional
+ * QCA_WLAN_VENDOR_ATTR_NDP_CONFIG_QOS - optional
+ * QCA_WLAN_VENDOR_ATTR_NDP_PMK - optional
+ * QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE - optional
  *
  * Return: 0 on success or error code on failure
  */
@@ -660,10 +728,31 @@ static int hdd_ndp_responder_req_handler(hdd_context_t *hdd_ctx,
 		hddLog(LOG1, FL("NDP config data is unavailable"));
 	}
 
+	if (tb[QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE] &&
+		!tb[QCA_WLAN_VENDOR_ATTR_NDP_PMK]) {
+		hddLog(LOGE, FL("PMK cannot be absent when CSID is present."));
+		return -EINVAL;
+	}
+
+	if (tb[QCA_WLAN_VENDOR_ATTR_NDP_PMK]) {
+		req.pmk.pmk = nla_data(tb[QCA_WLAN_VENDOR_ATTR_NDP_PMK]);
+		req.pmk.pmk_len = nla_len(tb[QCA_WLAN_VENDOR_ATTR_NDP_PMK]);
+		VOS_TRACE_HEX_DUMP(VOS_MODULE_ID_HDD,
+				VOS_TRACE_LEVEL_DEBUG,
+				req.pmk.pmk, req.pmk.pmk_len);
+	}
+
+	if (tb[QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE]) {
+		req.ncs_sk_type =
+			nla_get_u32(tb[QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE]);
+
+	}
+
 	hddLog(LOG1,
-		FL("vdev_id: %d, transaction_id: %d, ndp_rsp %d, ndp_instance_id: %d, ndp_app_info_len: %d"),
+		FL("vdev_id: %d, transaction_id: %d, ndp_rsp %d, ndp_instance_id: %d, ndp_app_info_len: %d, csid: %d"),
 		req.vdev_id, req.transaction_id, req.ndp_rsp,
-		req.ndp_instance_id, req.ndp_info.ndp_app_info_len);
+		req.ndp_instance_id, req.ndp_info.ndp_app_info_len,
+		req.ncs_sk_type);
 
 	status = sme_ndp_responder_req_handler(hdd_ctx->hHal, &req);
 	if (status != eHAL_STATUS_SUCCESS) {
@@ -744,7 +833,7 @@ static int hdd_ndp_end_req_handler(hdd_context_t *hdd_ctx, struct nlattr **tb)
  * QCA_WLAN_VENDOR_ATTR_NDP_SUBCMD =
  *         QCA_WLAN_VENDOR_ATTR_NDP_INTERFACE_CREATE (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID (2 bytes)
- * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE (4 bytes)
+ * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_VALUE (4 bytes)
  *
  * Return: none
@@ -762,6 +851,10 @@ static void hdd_ndp_iface_create_rsp_handler(hdd_adapter_t *adapter,
 	uint8_t create_transaction_id = 0;
 	uint32_t create_status = NDP_RSP_STATUS_ERROR;
 	uint32_t create_reason = NDP_NAN_DATA_IFACE_CREATE_FAILED;
+	hdd_station_ctx_t *sta_ctx = WLAN_HDD_GET_STATION_CTX_PTR(adapter);
+	v_MACADDR_t bc_mac_addr = VOS_MAC_ADDR_BROADCAST_INITIALIZER;
+	tCsrRoamInfo roam_info = {0};
+	tSirBssDescription tmp_bss_descp = {0};
 
 	ENTER();
 
@@ -780,6 +873,11 @@ static void hdd_ndp_iface_create_rsp_handler(hdd_adapter_t *adapter,
 	if (ndp_ctx) {
 		create_transaction_id = ndp_ctx->ndp_create_transaction_id;
 	} else {
+		hddLog(LOGE, FL("ndp_ctx is NULL"));
+		create_fail = true;
+	}
+
+	if (!sta_ctx) {
 		hddLog(LOGE, FL("ndp_ctx is NULL"));
 		create_fail = true;
 	}
@@ -812,7 +910,8 @@ static void hdd_ndp_iface_create_rsp_handler(hdd_adapter_t *adapter,
 	}
 
 	/* Status code */
-	if (nla_put_u32(vendor_event, QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE,
+	if (nla_put_u32(vendor_event,
+		QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE,
 		create_status)) {
 		hddLog(LOGE, FL("VENDOR_ATTR_NDP_DRV_RETURN_TYPE put fail"));
 		goto nla_put_failure;
@@ -833,7 +932,8 @@ static void hdd_ndp_iface_create_rsp_handler(hdd_adapter_t *adapter,
 		QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID,
 		create_transaction_id);
 	hddLog(LOG2, FL("status code: %d, value: %d"),
-		QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE, create_status);
+		QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE,
+		create_status);
 	hddLog(LOG2, FL("Return value: %d, value: %d"),
 		QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_VALUE,
 		create_reason);
@@ -856,6 +956,13 @@ static void hdd_ndp_iface_create_rsp_handler(hdd_adapter_t *adapter,
 	/* Something went wrong while starting the BSS */
 	if (create_fail)
 		goto close_ndi;
+
+	sta_ctx->broadcast_staid = ndi_rsp->sta_id;
+	hdd_save_peer(sta_ctx, sta_ctx->broadcast_staid, &bc_mac_addr);
+	hdd_roamRegisterSTA(adapter, &roam_info,
+			sta_ctx->broadcast_staid,
+			&bc_mac_addr, &tmp_bss_descp);
+	hdd_ctx->sta_to_adapter[sta_ctx->broadcast_staid] = adapter;
 
 	EXIT();
 	return;
@@ -915,7 +1022,7 @@ static void hdd_ndp_iface_delete_rsp_handler(hdd_adapter_t *adapter,
  * QCA_WLAN_VENDOR_ATTR_NDP_SUBCMD =
  *         QCA_WLAN_VENDOR_ATTR_NDP_INTERFACE_DELETE (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID (2 bytes)
- * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE (4 bytes)
+ * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_VALUE (4 bytes)
  *
  * Return: none
@@ -927,6 +1034,9 @@ void hdd_ndp_session_end_handler(hdd_adapter_t *adapter)
 	struct nan_datapath_ctx *ndp_ctx;
 	uint32_t data_len = sizeof(uint32_t) * 3 + sizeof(uint16_t) +
 				NLA_HDRLEN * 4 + NLMSG_HDRLEN;
+	VOS_STATUS status;
+	bool can_enter_standby = true;
+	hdd_adapter_list_node_t *adapter_node, *next;
 
 	ENTER();
 
@@ -984,7 +1094,7 @@ void hdd_ndp_session_end_handler(hdd_adapter_t *adapter)
 
 	/* Status code */
 	if (nla_put_u32(vendor_event,
-			QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE,
+			QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE,
 			ndp_ctx->ndi_delete_rsp_status)) {
 		hddLog(LOGE, FL("VENDOR_ATTR_NDP_DRV_RETURN_TYPE put fail"));
 		goto failure;
@@ -1005,7 +1115,7 @@ void hdd_ndp_session_end_handler(hdd_adapter_t *adapter)
 		QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID,
 		ndp_ctx->ndp_delete_transaction_id);
 	hddLog(LOG2, FL("status code: %d, value: %d"),
-		QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE,
+		QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE,
 		ndp_ctx->ndi_delete_rsp_status);
 	hddLog(LOG2, FL("Return value: %d, value: %d"),
 		QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_VALUE,
@@ -1015,6 +1125,24 @@ void hdd_ndp_session_end_handler(hdd_adapter_t *adapter)
 	ndp_ctx->state = NAN_DATA_NDI_DELETED_STATE;
 
 	cfg80211_vendor_event(vendor_event, GFP_KERNEL);
+
+	/*
+	 * It is possible that deleted NDI was the last active interface.
+	 * We should let the device enter lower power mode
+	 */
+	status = hdd_get_front_adapter(hdd_ctx, &adapter_node);
+	while ((NULL != adapter_node) && (VOS_STATUS_SUCCESS == status)) {
+		if (test_bit(DEVICE_IFACE_OPENED,
+				&adapter_node->pAdapter->event_flags)) {
+			can_enter_standby = false;
+			break;
+		}
+		status = hdd_get_next_adapter(hdd_ctx, adapter_node, &next);
+		adapter_node = next;
+	}
+
+	if (can_enter_standby)
+		wlan_hdd_stop_enter_lowpower(hdd_ctx);
 
 	EXIT();
 	return;
@@ -1034,7 +1162,7 @@ failure:
  *         QCA_WLAN_VENDOR_ATTR_NDP_INITIATOR_RESPONSE (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID (2 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_INSTANCE_ID (4 bytes)
- * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE (4 bytes)
+ * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_VALUE (4 bytes)
  *
  * Return: none
@@ -1078,7 +1206,8 @@ static void hdd_ndp_initiator_rsp_handler(hdd_adapter_t *adapter,
 			rsp->ndp_instance_id))
 		goto ndp_initiator_rsp_nla_failed;
 
-	if (nla_put_u32(vendor_event, QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE,
+	if (nla_put_u32(vendor_event,
+			QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE,
 			rsp->status))
 		goto ndp_initiator_rsp_nla_failed;
 
@@ -1115,7 +1244,6 @@ static void hdd_ndp_new_peer_ind_handler(hdd_adapter_t *adapter,
 	tCsrRoamInfo roam_info = {0};
 	struct nan_datapath_ctx *ndp_ctx = WLAN_HDD_GET_NDP_CTX_PTR(adapter);
 	hdd_station_ctx_t *sta_ctx = WLAN_HDD_GET_STATION_CTX_PTR(adapter);
-	v_MACADDR_t bc_mac_addr = VOS_MAC_ADDR_BROADCAST_INITIALIZER;
 
 	ENTER();
 
@@ -1138,16 +1266,11 @@ static void hdd_ndp_new_peer_ind_handler(hdd_adapter_t *adapter,
 	ndp_ctx->active_ndp_peers++;
 	hddLog(LOG1, FL("vdev_id: %d, num_peers: %d"),
 		adapter->sessionId,  ndp_ctx->active_ndp_peers);
-
 	hdd_roamRegisterSTA(adapter, &roam_info, new_peer_ind->sta_id,
 			    &new_peer_ind->peer_mac_addr, &tmp_bss_descp);
 	hdd_ctx->sta_to_adapter[new_peer_ind->sta_id] = adapter;
 	/* perform following steps for first new peer ind */
 	if (ndp_ctx->active_ndp_peers == 1) {
-		hdd_ctx->sta_to_adapter[NDP_BROADCAST_STAID] = adapter;
-		hdd_save_peer(sta_ctx, NDP_BROADCAST_STAID, &bc_mac_addr);
-		hdd_roamRegisterSTA(adapter, &roam_info, NDP_BROADCAST_STAID,
-				    &bc_mac_addr, &tmp_bss_descp);
 		hddLog(LOG1, FL("Set ctx connection state to connected"));
 		sta_ctx->conn_info.connState = eConnectionState_NdiConnected;
 		hdd_wmm_connect(adapter, &roam_info, eCSR_BSS_TYPE_NDI);
@@ -1155,6 +1278,7 @@ static void hdd_ndp_new_peer_ind_handler(hdd_adapter_t *adapter,
 			WLAN_WAKE_ALL_NETIF_QUEUE,
 			WLAN_CONTROL_PATH);
 	}
+
 	EXIT();
 }
 /**
@@ -1313,6 +1437,8 @@ ndp_confirm_nla_failed:
  * QCA_WLAN_VENDOR_ATTR_NDP_INSTANCE_ID (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_APP_INFO (ndp_app_info_len size)
  * QCA_WLAN_VENDOR_ATTR_NDP_CONFIG_QOS (4 bytes)
+ * QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE(4 bytes)
+ * QCA_WLAN_VENDOR_ATTR_NDP_SCID(scid_len in size)
  *
  * Return: none
  */
@@ -1368,9 +1494,9 @@ static void hdd_ndp_indication_handler(hdd_adapter_t *adapter,
 		return;
 	}
 
-	data_len = (4 * sizeof(uint32_t)) + (2 * VOS_MAC_ADDR_SIZE) + IFNAMSIZ +
-			event->ndp_info.ndp_app_info_len + (8 * NLA_HDRLEN) +
-			NLMSG_HDRLEN;
+	data_len = (5 * sizeof(uint32_t)) + (2 * VOS_MAC_ADDR_SIZE) + IFNAMSIZ +
+		event->ndp_info.ndp_app_info_len + event->scid.scid_len +
+		(10 * NLA_HDRLEN) + NLMSG_HDRLEN;
 
 	/* notify response to the upper layer */
 	vendor_event = cfg80211_vendor_event_alloc(hdd_ctx->wiphy,
@@ -1424,6 +1550,24 @@ static void hdd_ndp_indication_handler(hdd_adapter_t *adapter,
 			goto ndp_indication_nla_failed;
 	}
 
+	if (event->scid.scid_len) {
+		if (nla_put_u32(vendor_event,
+				QCA_WLAN_VENDOR_ATTR_NDP_NCS_SK_TYPE,
+				event->ncs_sk_type))
+			goto ndp_indication_nla_failed;
+
+		if (nla_put(vendor_event, QCA_WLAN_VENDOR_ATTR_NDP_SCID,
+				event->scid.scid_len,
+				event->scid.scid))
+			goto ndp_indication_nla_failed;
+
+		hddLog(LOG1, FL("csid: %d, scid_len: %d"),
+			event->ncs_sk_type, event->scid.scid_len);
+
+		VOS_TRACE_HEX_DUMP(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_DEBUG,
+				event->scid.scid, event->scid.scid_len);
+	}
+
 	cfg80211_vendor_event(vendor_event, GFP_KERNEL);
 	EXIT();
 	return;
@@ -1442,8 +1586,8 @@ ndp_indication_nla_failed:
  * QCA_WLAN_VENDOR_ATTR_NDP_SUBCMD =
  *         QCA_WLAN_VENDOR_ATTR_NDP_RESPONDER_RESPONSE (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID (2 bytes)
- * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE (4 bytes)
- * QCA_WLAN_VENDOR_ATTR_NDP_RESPONSE_CODE (4 bytes)
+ * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE (4 bytes)
+ * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_VALUE (4 bytes)
  *
  * Return: none
  */
@@ -1489,12 +1633,13 @@ static void hdd_ndp_responder_rsp_handler(hdd_adapter_t *adapter,
 	   rsp->transaction_id))
 		goto ndp_responder_rsp_nla_failed;
 
-	if (nla_put_u32(vendor_event, QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE,
+	if (nla_put_u32(vendor_event,
+			QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE,
 	   rsp->status))
 		goto ndp_responder_rsp_nla_failed;
 
 	if (nla_put_u32(vendor_event,
-	   QCA_WLAN_VENDOR_ATTR_NDP_RESPONSE_CODE,
+	   QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_VALUE,
 	   rsp->reason))
 		goto ndp_responder_rsp_nla_failed;
 
@@ -1515,7 +1660,7 @@ ndp_responder_rsp_nla_failed:
  * Following vendor event is sent to cfg80211:
  * QCA_WLAN_VENDOR_ATTR_NDP_SUBCMD =
  *         QCA_WLAN_VENDOR_ATTR_NDP_END_RESPONSE (4 bytes)
- * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE (4 bytes)
+ * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_VALUE (4 bytes)
  * QCA_WLAN_VENDOR_ATTR_NDP_TRANSACTION_ID (2 bytes)
  *
@@ -1553,7 +1698,8 @@ static void hdd_ndp_end_rsp_handler(hdd_adapter_t *adapter, void *rsp_params)
 			QCA_WLAN_VENDOR_ATTR_NDP_END_RESPONSE))
 		goto ndp_end_rsp_nla_failed;
 
-	if (nla_put_u32(vendor_event, QCA_WLAN_VENDOR_ATTR_NDP_DRV_RETURN_TYPE,
+	if (nla_put_u32(vendor_event,
+			QCA_WLAN_VENDOR_ATTR_NDP_DRV_RESPONSE_STATUS_TYPE,
 			rsp->status))
 		goto ndp_end_rsp_nla_failed;
 
@@ -1888,6 +2034,15 @@ int hdd_init_nan_data_mode(struct hdd_adapter_s *adapter)
 		goto error_sme_open;
 	}
 
+	ret_val = process_wma_set_command((int)adapter->sessionId,
+			(int)WMI_PDEV_PARAM_BURST_ENABLE,
+			(int)hdd_ctx->cfg_ini->enableSifsBurst,
+			PDEV_CMD);
+	if (0 != ret_val) {
+		hddLog(LOGE, FL("WMI_PDEV_PARAM_BURST_ENABLE set failed %d"),
+				ret_val);
+	}
+
 	/* open sme session for future use */
 	hal_status = sme_OpenSession(hdd_ctx->hHal, hdd_smeRoamCallback,
 			adapter, (uint8_t *)&adapter->macAddressCurrent,
@@ -1938,15 +2093,6 @@ int hdd_init_nan_data_mode(struct hdd_adapter_s *adapter)
 	}
 
 	set_bit(WMM_INIT_DONE, &adapter->event_flags);
-
-	ret_val = process_wma_set_command((int)adapter->sessionId,
-			(int)WMI_PDEV_PARAM_BURST_ENABLE,
-			(int)hdd_ctx->cfg_ini->enableSifsBurst,
-			PDEV_CMD);
-	if (0 != ret_val) {
-		hddLog(LOGE, FL("WMI_PDEV_PARAM_BURST_ENABLE set failed %d"),
-				ret_val);
-	}
 
 	ndp_ctx->state = NAN_DATA_NDI_CREATING_STATE;
 	return ret_val;

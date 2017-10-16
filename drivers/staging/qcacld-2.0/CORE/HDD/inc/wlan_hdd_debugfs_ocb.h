@@ -1,8 +1,5 @@
 /*
- * Copyright (c) 2012 The Linux Foundation. All rights reserved.
- *
- * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
- *
+ * Copyright (c) 2017 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -19,21 +16,29 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-/*
- * This file was originally distributed by Qualcomm Atheros, Inc.
- * under proprietary terms before Copyright ownership was assigned
- * to the Linux Foundation.
- */
+#ifndef _WLAN_HDD_DEBUGFS_OCB_H
+#define _WLAN_HDD_DEBUGFS_OCB_H
 
-/******************************************************************************
- * wlan_btc_svc.h
- *
- ******************************************************************************/
+#ifdef WLAN_FEATURE_DSRC
+int
+wlan_hdd_create_dsrc_chan_stats_file(hdd_adapter_t *adapter,
+				     hdd_context_t *hdd_ctx);
+int
+wlan_hdd_create_dsrc_tx_stats_file(hdd_adapter_t *adapter,
+				   hdd_context_t *hdd_ctx);
+#else
+static inline int
+wlan_hdd_create_dsrc_chan_stats_file(hdd_adapter_t *adapter,
+				     hdd_context_t *hdd_ctx)
+{
+	return 0;
+}
 
-#ifndef WLAN_BTC_SVC_H
-#define WLAN_BTC_SVC_H
-
-void send_btc_nlink_msg (int type, int dest_pid);
-int btc_activate_service(void *pAdapter);
-
-#endif
+static inline int
+wlan_hdd_create_dsrc_tx_stats_file(hdd_adapter_t *adapter,
+				   hdd_context_t *hdd_ctx)
+{
+	return 0;
+}
+#endif /* #ifdef WLAN_FEATURE_DSRC */
+#endif /* #ifndef _WLAN_HDD_DEBUGFS_OCB_H */

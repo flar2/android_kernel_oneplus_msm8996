@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -541,7 +541,7 @@ static eHalStatus hdd_ScanRequestCallback(tHalHandle halHandle, void *pContext,
 
     ENTER();
 
-    hddLog(LOGW,"%s called with halHandle = %p, pContext = %p, scanID = %d,"
+    hddLog(LOGW,"%s called with halHandle = %pK, pContext = %pK, scanID = %d,"
            " returned status = %d", __func__, halHandle, pContext,
            (int) scanId, (int) status);
 
@@ -551,7 +551,7 @@ static eHalStatus hdd_ScanRequestCallback(tHalHandle halHandle, void *pContext,
        do some quick sanity before proceeding */
     if (pAdapter->dev != dev)
     {
-       hddLog(LOGW, "%s: device mismatch %p vs %p",
+       hddLog(LOGW, "%s: device mismatch %pK vs %pK",
                __func__, pAdapter->dev, dev);
         return eHAL_STATUS_SUCCESS;
     }
@@ -720,8 +720,9 @@ static int __iw_set_scan(struct net_device *dev, struct iw_request_info *info,
    }
 
    /* push addIEScan in scanRequset if exist */
-   if (pAdapter->scan_info.scanAddIE.addIEdata &&
-       pAdapter->scan_info.scanAddIE.length)
+   if (pAdapter->scan_info.scanAddIE.length &&
+       (pAdapter->scan_info.scanAddIE.length <=
+        sizeof(pAdapter->scan_info.scanAddIE.addIEdata)))
    {
        scanRequest.uIEFieldLen = pAdapter->scan_info.scanAddIE.length;
        scanRequest.pIEField = pAdapter->scan_info.scanAddIE.addIEdata;
@@ -887,7 +888,7 @@ static eHalStatus hdd_CscanRequestCallback(tHalHandle halHandle, void *pContext,
     VOS_STATUS vos_status = VOS_STATUS_SUCCESS;
     ENTER();
 
-    hddLog(LOG1,"%s called with halHandle = %p, pContext = %p, scanID = %d,"
+    hddLog(LOG1,"%s called with halHandle = %pK, pContext = %pK, scanID = %d,"
            " returned status = %d", __func__, halHandle, pContext,
             (int) scanId, (int) status);
 
@@ -1132,8 +1133,9 @@ int iw_set_cscan(struct net_device *dev, struct iw_request_info *info,
         }
 
         /* push addIEScan in scanRequset if exist */
-        if (pAdapter->scan_info.scanAddIE.addIEdata &&
-            pAdapter->scan_info.scanAddIE.length)
+        if (pAdapter->scan_info.scanAddIE.length &&
+            (pAdapter->scan_info.scanAddIE.length <=
+             sizeof(pAdapter->scan_info.scanAddIE.addIEdata)))
         {
             scanRequest.uIEFieldLen = pAdapter->scan_info.scanAddIE.length;
             scanRequest.pIEField = pAdapter->scan_info.scanAddIE.addIEdata;

@@ -223,4 +223,39 @@ hdd_change_ch_avoidance_status(hdd_context_t *hdd_ctx,
     hddLog(LOG1, FL("is_ch_avoid_in_progress %d"), value);
 }
 
+#ifdef FEATURE_WLAN_SUB_20_MHZ
+bool hdd_hostapd_sub20_channelwidth_can_switch(
+	hdd_adapter_t *adapter, uint32_t *sub20_channel_width);
+bool hdd_hostapd_sub20_channelwidth_can_restore(
+	hdd_adapter_t *adapter);
+bool hdd_sub20_channelwidth_can_set(
+	hdd_adapter_t *adapter, uint32_t sub20_channel_width);
+int hdd_softap_set_channel_sub20_chanwidth_change(
+	struct net_device *dev, uint32_t chan_width);
+#else
+static inline bool hdd_hostapd_sub20_channelwidth_can_switch(
+	hdd_adapter_t *adapter, uint32_t *sub20_channel_width)
+{
+	return false;
+}
+
+static inline bool hdd_hostapd_sub20_channelwidth_can_restore(
+	hdd_adapter_t *adapter)
+{
+	return false;
+}
+
+static inline bool hdd_sub20_channelwidth_can_set(
+	hdd_adapter_t *adapter, uint32_t sub20_channel_width)
+{
+	return false;
+}
+
+static inline
+int hdd_softap_set_channel_sub20_chanwidth_change(
+	struct net_device *dev, uint32_t chan_width)
+{
+	return -ENOTSUPP;
+}
+#endif
 #endif    // end #if !defined( WLAN_HDD_HOSTAPD_H )

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -346,7 +346,7 @@ static VOS_STATUS wlan_ftm_vos_open( v_CONTEXT_t pVosContext, v_SIZE_t hddContex
    macOpenParms.powersaveOffloadEnabled =
       pHddCtx->cfg_ini->enablePowersaveOffload;
    vStatus = WDA_open(gpVosContext, gpVosContext->pHDDContext,
-                      wlan_hdd_ftm_update_tgt_cfg, NULL,
+                      wlan_hdd_ftm_update_tgt_cfg, NULL, NULL,
                       &macOpenParms);
    if (!VOS_IS_STATUS_SUCCESS(vStatus))
    {
@@ -1060,7 +1060,11 @@ int wlan_hdd_qcmbr_unified_ioctl(hdd_adapter_t *pAdapter, struct ifreq *ifr)
 {
     int ret = 0;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)) && defined(CONFIG_X86_64)
+    if (in_compat_syscall()) {
+#else
     if (is_compat_task()) {
+#endif
         ret = wlan_hdd_qcmbr_compat_ioctl(pAdapter, ifr);
     } else {
         ret = wlan_hdd_qcmbr_ioctl(pAdapter, ifr);
@@ -1075,8 +1079,10 @@ static void WLANQCMBR_McProcessMsg(v_VOID_t *message)
     u_int32_t data_len;
 
     data_len = *((u_int32_t *)message) + sizeof(u_int32_t);
-    qcmbr_buf = kzalloc(sizeof(qcmbr_queue_t), GFP_KERNEL);
+    if (data_len > MAX_UTF_LENGTH + 4)
+        return;
 
+    qcmbr_buf = kzalloc(sizeof(qcmbr_queue_t), GFP_KERNEL);
     if (qcmbr_buf != NULL) {
         memcpy(qcmbr_buf->utf_buf, message, data_len);
         spin_lock_bh(&qcmbr_queue_lock);

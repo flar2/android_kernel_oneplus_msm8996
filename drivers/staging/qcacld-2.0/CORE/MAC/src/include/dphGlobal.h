@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -501,20 +501,20 @@ typedef struct sDphHashNode
 
     uint8_t nss;
 
-    /* When a station with already an existing dph entry tries to
-
-     * associate again, the old dph entry will be zeroed out except
-
-     * for the next pointer. The next pointer must be defined at the
-
-     * end of the structure.
-
-     */
-
     tANI_U8 isDisassocDeauthInProgress;
     bool sta_deletion_in_progress;
-    struct sDphHashNode  *next;
     tANI_S8 del_sta_ctx_rssi;
+    uint8_t sub20_dynamic_channelwidth;
+    /* Flag indicating connected STA doesn't support ECSA */
+    uint8_t non_ecsa_capable;
+
+    /* When a station with an existing dph entry tries to
+     * associate again, the old dph entry will be zeroed out except
+     * for the next pointer. The next pointer must be defined at the
+     * end of the structure.
+     */
+    struct sDphHashNode  *next;
+    /* DO NOT ADD NEW MEMBER AFTER MEMBER *next */
 } tDphHashNode, *tpDphHashNode;
 
 
