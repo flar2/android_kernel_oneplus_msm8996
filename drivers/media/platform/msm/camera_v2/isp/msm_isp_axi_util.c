@@ -912,9 +912,12 @@ void msm_isp_increment_frame_id(struct vfe_device *vfe_dev,
 				msm_isp_halt_send_error(vfe_dev,
 					ISP_EVENT_REG_UPDATE_MISSING);
 			}
-
 		} else
 			vfe_dev->axi_data.src_info[frame_src].frame_id++;
+	}
+	if (frame_src == VFE_PIX_0) {
+		vfe_dev->isp_page->kernel_sofid =
+			vfe_dev->axi_data.src_info[frame_src].frame_id;
 	}
 	sof_info = vfe_dev->axi_data.src_info[frame_src].
 		dual_hw_ms_info.sof_info;
@@ -1556,6 +1559,10 @@ void msm_isp_halt_send_error(struct vfe_device *vfe_dev, uint32_t event)
 	if (atomic_read(&vfe_dev->error_info.overflow_state) !=
 		NO_OVERFLOW)
 		/* Recovery is already in Progress */
+		return;
+
+	/* if there are no active streams - do not start recovery */
+	if (!vfe_dev->axi_data.num_active_stream)
 		return;
 
 	if (ISP_EVENT_PING_PONG_MISMATCH == event &&
