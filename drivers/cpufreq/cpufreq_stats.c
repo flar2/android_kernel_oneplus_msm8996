@@ -29,6 +29,7 @@ DECLARE_HASHTABLE(uid_hash_table, UID_HASH_BITS);
 
 static spinlock_t cpufreq_stats_lock;
 
+static DEFINE_SPINLOCK(task_time_in_state_lock); /* task->time_in_state */
 static DEFINE_RT_MUTEX(uid_lock); /* uid_hash_table */
 
 struct uid_entry {
@@ -121,7 +122,7 @@ static int uid_time_in_state_show(struct seq_file *m, void *v)
 {
 	struct uid_entry *uid_entry;
 	struct task_struct *task, *temp;
-	unsigned long bkt;
+	unsigned long bkt, flags;
 	int i;
 
 	if (!all_freq_table || !cpufreq_all_freq_init)
@@ -136,11 +137,6 @@ static int uid_time_in_state_show(struct seq_file *m, void *v)
 
 	rcu_read_lock();
 	do_each_thread(temp, task) {
-		/* if this task has exited, we have already accounted for all
-		 * time in state
-		 */
-		if (!task->time_in_state)
-			continue;
 
 		uid_entry = find_or_register_uid(from_kuid_munged(
 			current_user_ns(), task_uid(task)));
@@ -161,10 +157,15 @@ static int uid_time_in_state_show(struct seq_file *m, void *v)
 			uid_entry->alive_max_states = task->max_states;
 		}
 
-		for (i = 0; i < task->max_states; ++i) {
-			uid_entry->alive_time_in_state[i] +=
-				atomic_read(&task->time_in_state[i]);
+		spin_lock_irqsave(&task_time_in_state_lock, flags);
+		if (task->time_in_state) {
+			for (i = 0; i < task->max_states; ++i) {
+				uid_entry->alive_time_in_state[i] +=
+					atomic_read(&task->time_in_state[i]);
+			}
 		}
+		spin_unlock_irqrestore(&task_time_in_state_lock, flags);
+
 	} while_each_thread(temp, task);
 	rcu_read_unlock();
 
@@ -233,8 +234,12 @@ static int cpufreq_stats_update(unsigned int cpu)
 void cpufreq_task_stats_init(struct task_struct *p)
 {
 	size_t alloc_size;
+	void *temp;
+	unsigned long flags;
 
-	WRITE_ONCE(p->time_in_state, NULL);
+	spin_lock_irqsave(&task_time_in_state_lock, flags);
+	p->time_in_state = NULL;
+	spin_unlock_irqrestore(&task_time_in_state_lock, flags);
 	WRITE_ONCE(p->max_states, 0);
 
 	if (!all_freq_table || !cpufreq_all_freq_init)
@@ -246,16 +251,22 @@ void cpufreq_task_stats_init(struct task_struct *p)
 	 * cpus
 	 */
 	alloc_size = p->max_states * sizeof(p->time_in_state[0]);
+	temp = kzalloc(alloc_size, GFP_ATOMIC);
 
-	WRITE_ONCE(p->time_in_state, kzalloc(alloc_size, GFP_KERNEL));
+	spin_lock_irqsave(&task_time_in_state_lock, flags);
+	p->time_in_state = temp;
+	spin_unlock_irqrestore(&task_time_in_state_lock, flags);
 }
 
 void cpufreq_task_stats_exit(struct task_struct *p)
 {
-	void *temp = p->time_in_state;
+	unsigned long flags;
+	void *temp;
 
-	WRITE_ONCE(p->time_in_state, NULL);
-	mb(); /* p->time_in_state */
+	spin_lock_irqsave(&task_time_in_state_lock, flags);
+	temp = p->time_in_state;
+	p->time_in_state = NULL;
+	spin_unlock_irqrestore(&task_time_in_state_lock, flags);
 	kfree(temp);
 }
 
@@ -263,15 +274,22 @@ int proc_time_in_state_show(struct seq_file *m, struct pid_namespace *ns,
 			    struct pid *pid, struct task_struct *p)
 {
 	int i;
+	cputime_t cputime;
+	unsigned long flags;
 
 	if (!all_freq_table || !cpufreq_all_freq_init || !p->time_in_state)
 		return 0;
 
 	spin_lock(&cpufreq_stats_lock);
 	for (i = 0; i < p->max_states; ++i) {
+		cputime = 0;
+		spin_lock_irqsave(&task_time_in_state_lock, flags);
+		if (p->time_in_state)
+			cputime = atomic_read(&p->time_in_state[i]);
+		spin_unlock_irqrestore(&task_time_in_state_lock, flags);
+
 		seq_printf(m, "%d %lu\n", all_freq_table->freq_table[i],
-			(unsigned long)cputime_to_clock_t(
-				atomic_read(&p->time_in_state[i])));
+			(unsigned long)cputime_to_clock_t(cputime));
 	}
 	spin_unlock(&cpufreq_stats_lock);
 
@@ -323,8 +341,7 @@ void acct_update_power(struct task_struct *task, cputime_t cputime) {
 	unsigned int cpu_num, curr;
 	int cpu_freq_i;
 	int all_freq_i;
-	u64 last_cputime;
-	atomic64_t *time_in_state;
+	unsigned long flags;
 
 	if (!task)
 		return;
@@ -335,18 +352,20 @@ void acct_update_power(struct task_struct *task, cputime_t cputime) {
 		return;
 
 	all_freq_i = atomic_read(&stats->all_freq_i);
-	time_in_state = READ_ONCE(task->time_in_state);
 
 	/* This function is called from a different context
 	 * Interruptions in between reads/assignements are ok
 	 */
-	if (all_freq_table && cpufreq_all_freq_init && time_in_state &&
+	if (all_freq_table && cpufreq_all_freq_init &&
 		!(task->flags & PF_EXITING) &&
 		all_freq_i != -1 && all_freq_i < READ_ONCE(task->max_states)) {
-		last_cputime =
-			atomic_read(&time_in_state[all_freq_i]);
-		atomic_set(&time_in_state[all_freq_i],
-			last_cputime + cputime);
+
+		spin_lock_irqsave(&task_time_in_state_lock, flags);
+		if (task->time_in_state) {
+			atomic64_add(cputime,
+				&task->time_in_state[all_freq_i]);
+		}
+		spin_unlock_irqrestore(&task_time_in_state_lock, flags);
 	}
 
 	powerstats = per_cpu(cpufreq_power_stats, cpu_num);
@@ -577,11 +596,12 @@ static void cpufreq_powerstats_free(void)
 }
 
 static int __cpufreq_stats_create_table(struct cpufreq_policy *policy,
-	int cpu, struct cpufreq_frequency_table *table, int count)
+		struct cpufreq_frequency_table *table, int count)
 {
 	unsigned int i, ret = 0;
 	struct cpufreq_stats *stat;
 	unsigned int alloc_size;
+	unsigned int cpu = policy->cpu;
 	struct cpufreq_frequency_table *pos;
 
 	if (per_cpu(cpufreq_stats_table, cpu))
@@ -591,6 +611,8 @@ static int __cpufreq_stats_create_table(struct cpufreq_policy *policy,
 		return -ENOMEM;
 
 	ret = sysfs_create_group(&policy->kobj, &stats_attr_group);
+	if (ret)
+		goto error_out;
 
 	stat->cpu = cpu;
 	per_cpu(cpufreq_stats_table, cpu) = stat;
@@ -623,6 +645,7 @@ static int __cpufreq_stats_create_table(struct cpufreq_policy *policy,
 	return 0;
 error_alloc:
 	sysfs_remove_group(&policy->kobj, &stats_attr_group);
+error_out:
 	kfree(stat);
 	per_cpu(cpufreq_stats_table, cpu) = NULL;
 	return ret;
@@ -807,7 +830,7 @@ static void cpufreq_stats_create_table(unsigned int cpu)
 		if (!per_cpu(cpufreq_power_stats, cpu))
 			cpufreq_powerstats_create(cpu, table, count);
 
-		__cpufreq_stats_create_table(policy, cpu, table, count);
+		__cpufreq_stats_create_table(policy, table, count);
 	}
 	cpufreq_cpu_put(policy);
 }
@@ -865,7 +888,7 @@ static int cpufreq_stat_notifier_policy(struct notifier_block *nb,
 	}
 
 	if (val == CPUFREQ_CREATE_POLICY)
-		ret = __cpufreq_stats_create_table(policy, cpu, table, count);
+		ret = __cpufreq_stats_create_table(policy, table, count);
 
 	return ret;
 }
@@ -931,6 +954,7 @@ static int process_notifier(struct notifier_block *self,
 {
 	struct task_struct *task = v;
 	struct uid_entry *uid_entry;
+	unsigned long flags;
 	uid_t uid;
 	int i;
 
@@ -960,10 +984,14 @@ static int process_notifier(struct notifier_block *self,
 		uid_entry->dead_max_states = task->max_states;
 	}
 
-	for (i = 0; i < task->max_states; ++i) {
-		uid_entry->dead_time_in_state[i] +=
-			atomic_read(&task->time_in_state[i]);
+	spin_lock_irqsave(&task_time_in_state_lock, flags);
+	if (task->time_in_state) {
+		for (i = 0; i < task->max_states; ++i) {
+			uid_entry->dead_time_in_state[i] +=
+				atomic_read(&task->time_in_state[i]);
+		}
 	}
+	spin_unlock_irqrestore(&task_time_in_state_lock, flags);
 
 	rt_mutex_unlock(&uid_lock);
 	return NOTIFY_OK;
