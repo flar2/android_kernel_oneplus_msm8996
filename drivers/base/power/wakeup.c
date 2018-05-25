@@ -512,13 +512,17 @@ static void wakeup_source_report_event(struct wakeup_source *ws)
 	if (!check_for_block(ws))	// AP: check if wakelock is on wakelock blocker list
 	{
 #endif
-		ws->event_count++;
-		/* This is racy, but the counter is approximate anyway. */
-		if (events_check_enabled)
-			ws->wakeup_count++;
+	ws->event_count++;
+	/* This is racy, but the counter is approximate anyway. */
+	if (events_check_enabled)
+		ws->wakeup_count++;
 
-		if (!ws->active)
-			wakeup_source_activate(ws);
+	if (!ws->active)
+		wakeup_source_activate(ws);
+	if (!strcmp(ws->name, "tasha-slim-pgd")) {
+		dump_stack();
+		pr_err("wake_lock tasha-slim-pgd %lu\n", ws->active_count);
+	}
 #ifdef CONFIG_BOEFFLA_WL_BLOCKER
 	}
 #endif
@@ -598,6 +602,10 @@ static void wakeup_source_deactivate(struct wakeup_source *ws)
 	ktime_t now;
 
 	ws->relax_count++;
+	if (!strcmp(ws->name, "tasha-slim-pgd")) {
+		dump_stack();
+		pr_err("wakeup_unlock tasha-slim-pgd %lu\n", ws->relax_count);
+	}
 	/*
 	 * __pm_relax() may be called directly or from a timer function.
 	 * If it is called directly right after the timer function has been
