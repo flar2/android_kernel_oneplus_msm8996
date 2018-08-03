@@ -1287,6 +1287,9 @@ static void gesture_judge(struct synaptics_ts_data *ts)
 		(gesture == Left2RightSwip && s2w_switch & SWEEP_RIGHT) ||
 		(gesture == DouTap && dt2w_switch)) {
 
+		if (haptic_feedback_disable)
+			qpnp_hap_ignore_next_request();
+
 		//wake gestures (requires app)
 		if (gestures_switch) {
 			int gest;
