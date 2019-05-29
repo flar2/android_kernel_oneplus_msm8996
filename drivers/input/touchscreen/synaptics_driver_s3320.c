@@ -1776,6 +1776,7 @@ static ssize_t tp_gesture_write_func(struct file *file, const char __user *buffe
         ts->gesture_enable = 0;
     }
     //ruanbanmao@BSP add for tp gesture 2015-05-06, end
+#endif
 	return count;
 }
 static ssize_t coordinate_proc_read_func(struct file *file, char __user *user_buf, size_t count, loff_t *ppos)
@@ -2946,7 +2947,6 @@ static ssize_t tp_reset_write_func (struct file *file, const char *buffer, size_
         input_report_key(ts->input_dev, BTN_TOOL_FINGER, 0);
 	input_sync(ts->input_dev);
     }
-#endif
 	return count;
 }
 
